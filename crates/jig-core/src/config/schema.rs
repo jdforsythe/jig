@@ -67,11 +67,15 @@ pub struct SkillsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServer {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub server_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
