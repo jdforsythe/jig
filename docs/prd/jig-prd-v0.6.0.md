@@ -74,13 +74,17 @@ These compose independently. A "code-review" persona can pair with a "devops" te
 There is ONE config format. The only difference is override scope:
 
 ```
-CLI flags  >  .jig.local.yaml  >  .jig.yaml  >  ~/.config/jig/config.yaml
-     ↑             ↑                  ↑                   ↑
-  Per-session   Personal          Project team         User global
-  (highest)     (gitignored)      (committed)          (lowest)
+CLI flags  >  UI template  >  .jig.local.yaml  >  .jig.yaml  >  ~/.config/jig/config.yaml
+     ↑              ↑               ↑                  ↑                   ↑
+  Per-session   TUI/--template   Personal          Project team         User global
+  (highest)     selection        (gitignored)      (committed)          (lowest)
+                (overrides all
+                 file layers)
 ```
 
 Every file uses the same schema. Higher specificity wins. No global config is required — a committed `.jig.yaml` is self-contained and bootstrappable.
+
+When a template is selected (via TUI or `--template`), its embedded config is applied **after** all file-based layers, so it overrides `.jig.yaml` for any fields both define. A UI persona selection is always the last layer and always wins over any persona in `.jig.yaml`.
 
 ### 2.3 Self-Bootstrapping Projects
 

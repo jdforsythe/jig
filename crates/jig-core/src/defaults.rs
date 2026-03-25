@@ -79,7 +79,26 @@ pub fn builtin_templates() -> Vec<Template> {
         Template {
             name: "security-audit".to_owned(),
             description: Some("Security-focused read-only audit template".to_owned()),
-            config: JigConfig::default(),
+            config: JigConfig {
+                schema: Some(1),
+                profile: Some(Profile {
+                    settings: Some(Settings {
+                        allowed_tools: Some(vec![
+                            "Read".to_owned(),
+                            "Grep".to_owned(),
+                            "Glob".to_owned(),
+                        ]),
+                        disallowed_tools: Some(vec![
+                            "Bash".to_owned(),
+                            "Edit".to_owned(),
+                            "Write".to_owned(),
+                        ]),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
         },
         Template {
             name: "documentation".to_owned(),

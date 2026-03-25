@@ -77,13 +77,17 @@ These compose independently. A "code-review" persona can pair with a "devops" te
 There is ONE config format. The only difference is override scope:
 
 ```
-CLI flags  >  .jig.local.yaml  >  .jig.yaml  >  ~/.config/jig/config.yaml
-     ↑             ↑                  ↑                   ↑
-  Per-session   Personal          Project team         User global
-  (highest)     (gitignored)      (committed)          (lowest)
+CLI flags  >  UI template  >  .jig.local.yaml  >  .jig.yaml  >  ~/.config/jig/config.yaml
+     ↑              ↑               ↑                  ↑                   ↑
+  Per-session   TUI/--template   Personal          Project team         User global
+  (highest)     selection        (gitignored)      (committed)          (lowest)
+                (overrides all
+                 file layers)
 ```
 
 Every file uses the same schema. Higher specificity wins. No global config is required — a committed `.jig.yaml` is self-contained and bootstrappable.
+
+When a template is selected (via TUI or `--template`), its embedded config is applied **after** all file-based layers, so it overrides `.jig.yaml` for any fields both define. Tool lists remain additive (union), so `.jig.yaml` can still add tools on top of the template — but the template's `disallowedTools` entries take precedence over any `allowedTools` from file layers at session time.
 
 ### 2.3 Self-Bootstrapping Projects
 
@@ -435,9 +439,10 @@ Both locations use the same format. Global content is available everywhere; proj
 |-----------|---------------|
 | Skills / Plugins | Union (additive). Higher specificity can only add. |
 | MCP servers | `layer` unions with existing, `replace` substitutes entirely. |
-| Settings (allowedTools, deny) | Union (additive). |
+| Settings (allowedTools, deny) | Union (additive). Template selection is applied above file layers, so template `disallowedTools` win over file-layer `allowedTools` at session time. |
 | Env vars | Higher specificity wins per key. |
-| Persona | Last one wins entirely — **unless** `extends` declared in `.jig.local.yaml` |
+| Persona | Last one wins entirely — **unless** `extends` declared in `.jig.local.yaml`. A UI/CLI persona selection is always last and therefore always wins over any persona in `.jig.yaml`. |
+| Template config | Applied after all file-based layers (same level as CLI flags). UI template selection overrides `.jig.yaml` for scalar fields; tool lists remain additive. |
 | Context fragments | Union, ordered by priority number then appearance. |
 | Hooks | Concatenated (all levels run in order). |
 | `extends` array | Merged left to right, then project config merges on top. |
@@ -593,10 +598,11 @@ jig [--template T] [--persona P] [flags]
  │     └─ Is another jig session active in this CWD? (if so → warning + session suffix generation)
  │
  ├─ 2. RESOLVE CONFIG
- │     ├─ Load ~/.config/jig/config.yaml (global)
+ │     ├─ Load ~/.config/jig/config.yaml (global, lowest priority)
  │     ├─ Load .jig.yaml (project, if exists)
  │     ├─ Load .jig.local.yaml (personal overrides, if exists)
- │     ├─ Apply CLI overrides (--template, --persona, flags)
+ │     ├─ Merge selected template's embedded config (overrides all file layers)
+ │     ├─ Apply remaining CLI overrides (--persona, --model, flags — highest priority)
  │     └─ Resolve `extends` array (merge templates left to right, detect cycles with DFS)
  │
  ├─ 3. EXPAND

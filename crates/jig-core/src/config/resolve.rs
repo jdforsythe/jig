@@ -128,6 +128,8 @@ pub fn resolve_config(
     }
 
     // Build layer stack: global (lowest) → project → local → cli (highest)
+    // Template config is applied inside apply_cli_overrides so it sits above all
+    // file-based layers — UI selections override .jig.yaml, not the other way around.
     let layers: Vec<(Option<JigConfig>, ConfigSource)> = vec![
         (global_result, ConfigSource::GlobalUser),
         (project_result, ConfigSource::TeamProject),
@@ -302,9 +304,17 @@ fn apply_cli_overrides(
     overrides: &CliOverrides,
     persona_layers: &mut Vec<(Persona, ConfigSource)>,
 ) {
-    if let Some(template) = &overrides.template {
-        resolved.template_name = Some(template.clone());
+    if let Some(template_name) = &overrides.template {
+        resolved.template_name = Some(template_name.clone());
         resolved.resolution_trace.insert("template".to_owned(), ConfigSource::CliFlag.to_string());
+        // Merge the template's embedded config at CLI priority so it overrides all
+        // file-based layers (.jig.yaml, .jig.local.yaml).  UI selection is authoritative.
+        if let Some(template) = crate::defaults::builtin_templates()
+            .into_iter()
+            .find(|t| &t.name == template_name)
+        {
+            merge_layer(resolved, &template.config, ConfigSource::CliFlag, persona_layers);
+        }
     }
     if let Some(persona_name) = &overrides.persona {
         // Add a synthetic persona layer for CLI-specified persona
@@ -391,6 +401,54 @@ mod tests {
         let resolved = resolve_config(dir.path(), &overrides).unwrap();
         assert!(resolved.mcp_servers.is_empty());
         assert!(resolved.allowed_tools.is_empty());
+    }
+
+    #[test]
+    fn test_template_config_applied_when_selected() {
+        // Regression: template name was stored as metadata but its embedded JigConfig
+        // (allowed/disallowed tools, etc.) was never merged into the resolved config.
+        let dir = tempfile::tempdir().unwrap();
+        let overrides = CliOverrides {
+            template: Some("code-review".to_owned()),
+            ..Default::default()
+        };
+        let resolved = resolve_config(dir.path(), &overrides).unwrap();
+        assert_eq!(resolved.template_name.as_deref(), Some("code-review"));
+        assert!(resolved.disallowed_tools.contains(&"Bash".to_owned()), "template disallowed_tools must be applied");
+        assert!(resolved.allowed_tools.contains(&"Read".to_owned()), "template allowed_tools must be applied");
+    }
+
+    #[test]
+    fn test_security_audit_template_config_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let overrides = CliOverrides {
+            template: Some("security-audit".to_owned()),
+            ..Default::default()
+        };
+        let resolved = resolve_config(dir.path(), &overrides).unwrap();
+        assert!(resolved.disallowed_tools.contains(&"Bash".to_owned()));
+        assert!(resolved.disallowed_tools.contains(&"Edit".to_owned()));
+        assert!(resolved.allowed_tools.contains(&"Grep".to_owned()));
+    }
+
+    #[test]
+    fn test_project_config_additively_extends_template() {
+        // Tool lists are additive (union), so .jig.yaml can add tools on top of the
+        // template — but the template's own restrictions (applied at CLI priority) are
+        // still in the disallowed list and will win over the allowed list at runtime.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".jig.yaml"), "schema: 1\nprofile:\n  settings:\n    allowedTools:\n      - Bash\n").unwrap();
+        let overrides = CliOverrides {
+            template: Some("code-review".to_owned()),
+            ..Default::default()
+        };
+        let resolved = resolve_config(dir.path(), &overrides).unwrap();
+        // .jig.yaml adds Bash to allowed (additive union)
+        assert!(resolved.allowed_tools.contains(&"Bash".to_owned()));
+        // Template's allowed tools are still present
+        assert!(resolved.allowed_tools.contains(&"Read".to_owned()));
+        // Template's disallowed tools are applied (template wins over project for these)
+        assert!(resolved.disallowed_tools.contains(&"Bash".to_owned()));
     }
 
     #[test]
