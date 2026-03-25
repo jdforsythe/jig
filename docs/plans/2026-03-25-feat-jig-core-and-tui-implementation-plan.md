@@ -1,10 +1,17 @@
 ---
 title: "feat: Implement jig CLI — Phase 1 Core + Phase 2 TUI"
 type: feat
-status: active
+status: phase-1-complete
 date: 2026-03-25
 deepened: 2026-03-25 (Round 1 + Round 2)
 origin: docs/brainstorms/2026-03-25-jig-technical-and-ux-brainstorm.md
+phase_1_merged: 2026-03-25 (PR #1)
+phase_1_post_merge_fixes:
+  - "fix(executor): remove setpgid to fix hang on claude launch — child must stay in parent process group"
+  - "fix(mcp): always suffix written entries so cleanup reliably removes them"
+  - "fix(mcp): skip serializing None fields on McpServer — Claude Code rejects null fields"
+  - "fix(mcp): use direct map navigation instead of JSON Pointer — '/' in cwd paths breaks pointer()"
+  - "fix(resolve): merge builtin persona rules when persona name matches a builtin"
 ---
 
 # feat: Implement jig CLI — Phase 1 Core + Phase 2 TUI
@@ -95,7 +102,7 @@ All technical decisions are finalized. Seven open questions from the PRD were re
 
 Claude Code users working in large codebases accumulate complex, session-specific launch configurations: MCP servers, tool permissions, system prompt personas, context fragments, and skill-injected files. Today there is no standard way to compose, version, or share these configurations. Each session is configured manually, team patterns cannot be shared declaratively, and personal overrides conflict with project defaults.
 
-`jig` solves this by providing a layered config system — global → project → local → CLI — that assembles the full Claude Code invocation automatically, with a TUI for interactive selection and a headless path for scripting.
+`jig` solves this by providing a layered config system — global → project → local → UI template → CLI — that assembles the full Claude Code invocation automatically, with a TUI for interactive selection and a headless path for scripting. TUI/CLI template and persona selections override all file-based layers.
 
 ---
 
@@ -113,11 +120,12 @@ jig (binary)
 │   ├── bare `jig` → TUI                          [crates/jig-tui/]
 │   └── `jig -t T` / `--go` / `--last` → headless
 │
-├── Config resolution (merge 4 layers)            [crates/jig-core/config/]
-│   ├── ~/.config/jig/config.yaml  (global)
+├── Config resolution (layered merge)             [crates/jig-core/config/]
+│   ├── ~/.config/jig/config.yaml  (global, lowest)
 │   ├── .jig.yaml                  (project/team)
 │   ├── .jig.local.yaml            (personal)
-│   └── CLI flags                  (highest)
+│   ├── UI template config         (overrides all file layers)
+│   └── CLI flags / persona        (highest)
 │
 ├── Assembly pipeline (16 steps)                  [crates/jig-core/assembly/]
 │   ├── MCP write → ~/.claude.json (atomic, flock)
@@ -344,15 +352,16 @@ This enables miette's fancy renderer to display the YAML file content with a car
 
 #### 1.2 Config Resolution (`crates/jig-core/config/resolve.rs`)
 
-Implements the four-layer merge (PRD §5.4, lines 359–369). Merge semantics:
+Implements the layered merge (PRD §5.4). Priority order: global → project → local → **UI template config** → CLI persona/model flags. Merge semantics:
 
 | Field | Rule |
 |---|---|
 | `profile.skills` | Union (additive) |
 | `profile.mcp` | `layer` = union, `replace` = substitute |
-| `profile.settings` (allowedTools, deny) | Union |
+| `profile.settings` (allowedTools, deny) | Union (additive). Template `disallowedTools` applied at CLI priority, winning over file-layer `allowedTools`. |
 | `profile.env` | Higher specificity wins per key |
-| `persona` | Last wins entirely — **unless** `extends` declared |
+| `persona` | Last wins entirely — **unless** `extends` declared. UI/CLI persona is always last → always wins over `.jig.yaml` persona. |
+| Template config | Applied after all file layers (CLI priority). UI template selection overrides `.jig.yaml` scalar fields. |
 | `context.fragments` | Union, ordered by `priority` number |
 | `hooks` | Concatenated (all levels run) |
 
@@ -647,7 +656,7 @@ The full 16-step pipeline (PRD §8.1, lines 512–583):
 
 ```
 Step  1: Detect environment (claude binary, git worktree, concurrent sessions → session suffix)
-Step  2: Resolve config (merge all four layers)
+Step  2: Resolve config (global → project → local → UI template → CLI flags)
 Step  3: Expand from_source shorthands + ${ENV_VAR} substitutions in MCP URLs
 Step  4: Check schema version (prompt migration if needed)
 Step  5: Check skill/plugin dependencies (prompt install if missing)

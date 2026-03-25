@@ -424,4 +424,56 @@ mod tests {
         let suffixed = rename_map.get("myserver").unwrap();
         assert!(suffixed.starts_with("myserver__jig_"));
     }
+
+    #[test]
+    fn test_json_pointer_fails_on_absolute_paths() {
+        // Regression: pointer() treats '/' as a JSON Pointer separator (RFC 6901).
+        // Absolute cwd paths like /private/tmp/jig-test silently mis-navigate.
+        // Direct .get() chaining must be used instead.
+        let root = serde_json::json!({
+            "projects": {
+                "/private/tmp/jig-test": {
+                    "mcpServers": { "test__jig_abc12345": {} }
+                }
+            }
+        });
+        let cwd_key = "/private/tmp/jig-test";
+
+        // JSON Pointer silently mis-navigates on absolute paths
+        let pointer_path = format!("/projects{cwd_key}/mcpServers");
+        assert!(
+            root.pointer(&pointer_path).is_none(),
+            "pointer() must not be used — it breaks on absolute paths containing '/'"
+        );
+
+        // Direct chained .get() works correctly
+        let servers = root
+            .get("projects")
+            .and_then(|p| p.get(cwd_key))
+            .and_then(|c| c.get("mcpServers"));
+        assert!(servers.is_some(), "direct .get() navigation must find the mcpServers entry");
+    }
+
+    #[test]
+    fn test_cleanup_suffix_marker_removes_only_jig_entries() {
+        // Regression: cleanup uses retain(|name| !name.ends_with(&suffix_marker)).
+        // This only works if ALL jig-written entries carry the suffix.
+        // Pre-existing entries (no suffix) must survive cleanup unchanged.
+        let session_suffix = "jig_a1b2c3d4";
+        let suffix_marker = format!("__{session_suffix}");
+
+        let mut servers: serde_json::Map<String, Value> = serde_json::Map::new();
+        servers.insert(format!("postgres__{session_suffix}"), Value::Null);
+        servers.insert(format!("redis__{session_suffix}"), Value::Null);
+        servers.insert("preexisting-server".to_owned(), Value::Null);
+
+        servers.retain(|name, _| !name.ends_with(&suffix_marker));
+
+        assert!(!servers.contains_key(&format!("postgres__{session_suffix}")),
+            "suffixed jig entry must be removed");
+        assert!(!servers.contains_key(&format!("redis__{session_suffix}")),
+            "suffixed jig entry must be removed");
+        assert!(servers.contains_key("preexisting-server"),
+            "pre-existing entry without suffix must survive");
+    }
 }

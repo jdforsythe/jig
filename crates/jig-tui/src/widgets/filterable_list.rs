@@ -5,7 +5,7 @@ use nucleo_matcher::{
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::Line,
     widgets::{Block, Borders, List, ListItem, ListState, StatefulWidget},
 };
@@ -162,7 +162,13 @@ impl<'a> StatefulWidget for FilterableListWidget<'a> {
 
         let list = List::new(items)
             .block(block)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+            .highlight_symbol("> ")
+            .highlight_style(
+                Style::default()
+                    .bg(theme.highlight_bg)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            );
 
         StatefulWidget::render(list, area, buf, &mut state.list_state);
     }

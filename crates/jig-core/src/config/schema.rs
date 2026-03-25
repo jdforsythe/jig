@@ -225,4 +225,24 @@ mod tests {
         assert_eq!(ConfigSource::PersonalLocal.to_string(), ".jig.local.yaml");
         assert_eq!(ConfigSource::CliFlag.to_string(), "CLI flag");
     }
+
+    #[test]
+    fn test_mcp_server_none_fields_not_serialized() {
+        // Regression: Claude Code's MCP validator rejects entries with explicit null
+        // fields (e.g. "env": null). All Option fields must use skip_serializing_if.
+        let server = McpServer {
+            server_type: Some("stdio".to_owned()),
+            command: Some("npx".to_owned()),
+            args: None,
+            env: None,
+            url: None,
+        };
+        let val = serde_json::to_value(&server).unwrap();
+        let obj = val.as_object().unwrap();
+        assert!(!obj.contains_key("args"), "None args must not appear in JSON");
+        assert!(!obj.contains_key("env"), "None env must not appear in JSON");
+        assert!(!obj.contains_key("url"), "None url must not appear in JSON");
+        assert_eq!(obj["type"].as_str(), Some("stdio"));
+        assert_eq!(obj["command"].as_str(), Some("npx"));
+    }
 }
