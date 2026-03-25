@@ -354,10 +354,28 @@ fn resolve_persona(layers: &[(Persona, ConfigSource)]) -> ResolvedPersona {
         }
     }
 
-    // No extends — use winning persona directly
+    // No extends — use winning persona directly, but merge built-in rules if name matches
+    let effective_name = winning_persona.name.clone().or_else(|| winning_persona.ref_name.clone());
+
+    let builtin_rules: Vec<String> = effective_name
+        .as_deref()
+        .and_then(|n| {
+            crate::defaults::builtin_personas()
+                .into_iter()
+                .find(|(key, _)| key == n)
+                .and_then(|(_, p)| p.rules)
+        })
+        .unwrap_or_default();
+
+    let user_rules = winning_persona.rules.clone().unwrap_or_default();
+
+    // Built-in rules first, then user-provided rules appended on top
+    let mut rules = builtin_rules;
+    rules.extend(user_rules);
+
     ResolvedPersona {
-        name: winning_persona.name.clone().or_else(|| winning_persona.ref_name.clone()),
-        rules: winning_persona.rules.clone().unwrap_or_default(),
+        name: effective_name,
+        rules,
         file: winning_persona.file.clone(),
     }
 }
@@ -419,5 +437,68 @@ profile:
         };
         let result = validate_layer(&config, ConfigSource::PersonalLocal);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_builtin_rules_merged_when_name_matches() {
+        // Reproduces the playbook step 6 bug: name: pair-programmer with user rules
+        // should get built-in pair-programmer rules prepended, not just user rules.
+        let layers = vec![(
+            Persona {
+                name: Some("pair-programmer".to_owned()),
+                rules: Some(vec![
+                    "This is the myproject repo. Main language is TypeScript.".to_owned(),
+                    "Always run tests after changes.".to_owned(),
+                ]),
+                ..Default::default()
+            },
+            ConfigSource::TeamProject,
+        )];
+        let resolved = resolve_persona(&layers);
+        // Built-in rules must be present
+        assert!(
+            resolved.rules.iter().any(|r| r.contains("Think out loud")),
+            "expected built-in pair-programmer rules, got: {:?}",
+            resolved.rules
+        );
+        // User rules must also be present
+        assert!(resolved.rules.iter().any(|r| r.contains("Always run tests")));
+        // Built-in rules come first
+        let builtin_idx = resolved.rules.iter().position(|r| r.contains("Think out loud")).unwrap();
+        let user_idx = resolved.rules.iter().position(|r| r.contains("Always run tests")).unwrap();
+        assert!(builtin_idx < user_idx, "built-in rules should precede user rules");
+    }
+
+    #[test]
+    fn test_unknown_persona_name_uses_only_user_rules() {
+        let layers = vec![(
+            Persona {
+                name: Some("my-custom-persona".to_owned()),
+                rules: Some(vec!["Custom rule.".to_owned()]),
+                ..Default::default()
+            },
+            ConfigSource::TeamProject,
+        )];
+        let resolved = resolve_persona(&layers);
+        assert_eq!(resolved.rules, vec!["Custom rule."]);
+        assert_eq!(resolved.name.as_deref(), Some("my-custom-persona"));
+    }
+
+    #[test]
+    fn test_cli_ref_name_merges_builtin_rules() {
+        // -p pair-programmer from CLI should also get built-in rules
+        let layers = vec![(
+            Persona {
+                ref_name: Some("pair-programmer".to_owned()),
+                ..Default::default()
+            },
+            ConfigSource::CliFlag,
+        )];
+        let resolved = resolve_persona(&layers);
+        assert!(
+            resolved.rules.iter().any(|r| r.contains("Think out loud")),
+            "CLI -p flag should load built-in rules, got: {:?}",
+            resolved.rules
+        );
     }
 }

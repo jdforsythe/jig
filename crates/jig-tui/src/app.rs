@@ -450,7 +450,7 @@ fn render_which_key(frame: &mut ratatui::Frame, area: Rect) {
     use ratatui::widgets::Clear;
 
     let popup_width = 50u16.min(area.width.saturating_sub(4));
-    let popup_height = 16u16.min(area.height.saturating_sub(4));
+    let popup_height = 15u16.min(area.height.saturating_sub(4));
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = (area.height.saturating_sub(popup_height)) / 2;
 
@@ -470,10 +470,9 @@ fn render_which_key(frame: &mut ratatui::Frame, area: Rect) {
         Line::from(" Tab    Switch pane focus"),
         Line::from(" /      Filter mode"),
         Line::from(" Enter  Launch session"),
-        Line::from(" d      Dry-run"),
         Line::from(" p      Toggle preview"),
-        Line::from(" C-d    Scroll preview ↓"),
-        Line::from(" C-u    Scroll preview ↑"),
+        Line::from(" d/D    Scroll preview ↓"),
+        Line::from(" u/U    Scroll preview ↑"),
         Line::from(" ?      This help"),
         Line::from(" q/Esc  Quit"),
     ];

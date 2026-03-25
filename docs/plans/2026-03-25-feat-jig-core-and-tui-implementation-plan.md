@@ -1,10 +1,17 @@
 ---
 title: "feat: Implement jig CLI — Phase 1 Core + Phase 2 TUI"
 type: feat
-status: active
+status: phase-1-complete
 date: 2026-03-25
 deepened: 2026-03-25 (Round 1 + Round 2)
 origin: docs/brainstorms/2026-03-25-jig-technical-and-ux-brainstorm.md
+phase_1_merged: 2026-03-25 (PR #1)
+phase_1_post_merge_fixes:
+  - "fix(executor): remove setpgid to fix hang on claude launch — child must stay in parent process group"
+  - "fix(mcp): always suffix written entries so cleanup reliably removes them"
+  - "fix(mcp): skip serializing None fields on McpServer — Claude Code rejects null fields"
+  - "fix(mcp): use direct map navigation instead of JSON Pointer — '/' in cwd paths breaks pointer()"
+  - "fix(resolve): merge builtin persona rules when persona name matches a builtin"
 ---
 
 # feat: Implement jig CLI — Phase 1 Core + Phase 2 TUI
