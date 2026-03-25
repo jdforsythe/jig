@@ -1,0 +1,19 @@
+[package]
+name = "jig-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+jig-core = { path = "../jig-core" }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+nucleo-matcher = { workspace = true }
+unicode-width = { workspace = true }
+pulldown-cmark = { workspace = true }
+rustc-hash = { workspace = true }
+tracing = { workspace = true }
+scopeguard = { workspace = true }
+
+[lints]
+workspace = true

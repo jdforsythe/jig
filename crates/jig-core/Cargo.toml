@@ -1,0 +1,43 @@
+[package]
+name = "jig-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+figment = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
+nix = { workspace = true }
+signal-hook = { workspace = true }
+fd-lock = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rustc-hash = { workspace = true }
+getrandom = { workspace = true }
+home = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+scopeguard = { workspace = true }
+tempfile = "3"
+libc = "0.2"
+
+[dependencies.ureq]
+workspace = true
+optional = true
+
+[features]
+default = []
+sync = ["dep:ureq"]
+tokens = []
+
+[dev-dependencies]
+proptest = { workspace = true }
+insta = { workspace = true }
+
+[lints]
+workspace = true

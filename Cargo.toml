@@ -1,0 +1,92 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/jig-core",
+    "crates/jig-cli",
+    "crates/jig-tui",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["jig contributors"]
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+figment = { version = "0.10", features = ["yaml", "env"] }
+serde_yaml = "0.9"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+
+# Error handling
+thiserror = "2"
+miette = { version = "7", features = ["fancy"] }
+
+# Async / process
+nix = { version = "0.29", features = ["process", "signal", "fs"] }
+signal-hook = "0.3"
+
+# File locking
+fd-lock = "4"
+
+# Crypto / hashing
+sha2 = "0.10"
+hex = "0.4"
+rustc-hash = "2"
+
+# Random
+getrandom = "0.2"
+
+# Paths
+home = "0.5"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+nucleo-matcher = "0.3"
+unicode-width = "0.2"
+pulldown-cmark = "0.12"
+
+# Scope guard
+scopeguard = "1"
+
+# HTTP (behind sync feature)
+ureq = "2"
+
+# Proptest
+proptest = "1"
+
+# Snapshot testing
+insta = { version = "1", features = ["yaml"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[profile.release-headless]
+inherits = "release"
+opt-level = "z"
+
+[workspace.lints.rust]
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"

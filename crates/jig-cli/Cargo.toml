@@ -1,0 +1,28 @@
+[package]
+name = "jig-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "jig"
+path = "src/main.rs"
+
+[dependencies]
+jig-core = { path = "../jig-core" }
+jig-tui = { path = "../jig-tui", optional = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+miette = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+home = { workspace = true }
+
+[features]
+default = ["tui"]
+tui = ["dep:jig-tui"]
+
+[lints]
+workspace = true
