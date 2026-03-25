@@ -98,8 +98,15 @@ pub fn fork_and_exec(claude_bin: &Path, args: &[String]) -> Result<i32, Executor
 
     match fork_result {
         ForkResult::Child => {
-            // Create new process group so killpg reaches all grandchildren
+            // Create new process group so killpg reaches all grandchildren.
             let _ = setpgid(Pid::from_raw(0), Pid::from_raw(0));
+
+            // Hand terminal control to this process group BEFORE exec.
+            // Without this, the child is in a background process group and
+            // receives SIGTTIN when it tries to read from stdin, causing it
+            // to stop silently while the parent hangs in waitpid.
+            // SAFETY: tcsetpgrp and getpid are async-signal-safe.
+            unsafe { libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpid()) };
 
             // Execute claude — replaces this process image
             let _ = execvp(&prog, &c_args);
@@ -116,6 +123,10 @@ pub fn fork_and_exec(claude_bin: &Path, args: &[String]) -> Result<i32, Executor
         ForkResult::Parent { child } => {
             let child_pgid = child; // pgid == child pid after setpgid(0,0)
 
+            // Mirror setpgid from parent side to close the race: whichever
+            // side runs first sets the pgid; the second call is a no-op.
+            let _ = setpgid(child, child);
+
             // Forward signals to the entire process group
             std::thread::spawn(move || {
                 for sig in signals.forever() {
@@ -128,26 +139,32 @@ pub fn fork_and_exec(claude_bin: &Path, args: &[String]) -> Result<i32, Executor
             });
 
             // waitpid loop with EINTR retry
-            loop {
+            let exit_code = loop {
                 match waitpid(child, Some(WaitPidFlag::empty())) {
                     Ok(WaitStatus::Exited(_, code)) => {
                         info!("Child exited with code {}", code);
-                        return Ok(code);
+                        break code;
                     }
                     Ok(WaitStatus::Signaled(_, sig, _)) => {
                         info!("Child killed by signal {:?}", sig);
                         // Re-raise so jig's exit code reflects the signal
                         unsafe { libc::raise(sig as libc::c_int) };
-                        return Ok(128 + sig as i32);
+                        break 128 + sig as i32;
                     }
                     Err(nix::errno::Errno::EINTR) => continue, // retry on EINTR (macOS)
-                    Ok(_) => continue,
+                    Ok(_) => continue, // WaitStatus::Stopped etc — ignore
                     Err(e) => {
                         tracing::warn!("waitpid error: {}", e);
-                        return Ok(1);
+                        break 1;
                     }
                 }
-            }
+            };
+
+            // Reclaim terminal control now that the child is gone.
+            // SAFETY: getpgrp is always safe.
+            unsafe { libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp()) };
+
+            Ok(exit_code)
         }
     }
 }
