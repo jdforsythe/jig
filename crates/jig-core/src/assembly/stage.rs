@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
-use tracing::{debug, info};
 
 use super::executor::{ExecutorError, find_claude_binary, fork_and_exec};
 use super::mcp::{McpError, cleanup_entries, write_atomic};
@@ -87,18 +86,8 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
     let pid = std::process::id();
     let session_id = uuid::Uuid::new_v4().to_string();
 
-    debug!("Assembly start: cwd={} pid={} session={}", canonical_cwd.display(), pid, session_id);
-
     // Step 2: Resolve config (all four layers)
     let resolved = resolve_config(&opts.project_dir, &opts.cli_overrides)?;
-
-    // Step 3: Env var substitution (deferred to MCP write for credential safety)
-
-    // Step 4: Schema version check (migration if needed)
-    // Handled in resolve_config for now
-
-    // Step 5: Skill/plugin dependency check
-    // Skipped for MVP
 
     // Step 6: Security approvals (hook trust tier evaluation)
     if !opts.dry_run {
@@ -112,7 +101,6 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
             command: e.command.clone(),
         })?;
     }
-
     // Step 7: Run pre_launch hooks (dry_run: show without running)
     if opts.dry_run {
         print_dry_run_hooks(&resolved.pre_launch_hooks);
@@ -127,7 +115,6 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
     // Step 8: Stage temp dir
     let temp_dir = create_temp_dir()?;
     let temp_path = temp_dir.path().to_owned();
-    debug!("Temp dir: {}", temp_path.display());
 
     // Step 9: Symlink skills into temp dir
     stage_local_skills(&temp_path, &resolved.local_skills, &opts.project_dir)?;
@@ -138,7 +125,6 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
     } else {
         None
     };
-
     // Initialize SessionGuard after Step 10 — Drop runs Category A cleanup
     let mut guard = SessionGuard {
         temp_dir: Some(temp_dir),
@@ -188,12 +174,6 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
 
     // Step 14: Find claude binary
     let claude_bin = find_claude_binary().ok_or(ExecutorError::ClaudeNotFound)?;
-
-    // CRITICAL: Drop the fd-lock guard BEFORE exec.
-    // The lock guard was already dropped when write_atomic returned.
-    // guard.temp_dir must remain alive until after exec (it's cleaned up by Drop).
-
-    info!("Launching claude: {} {}", claude_bin.display(), claude_args.join(" "));
 
     // Steps 14–16: Fork, signal handling, waitpid
     let exit_code = fork_and_exec(&claude_bin, &claude_args)?;
