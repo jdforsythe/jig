@@ -173,9 +173,14 @@ pub fn write_atomic(
         .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         .unwrap_or_default();
 
-    // Generate unique session suffix and detect conflicts
+    // Generate unique session suffix.
+    // Always suffix ALL new entries (not just conflicting ones) so cleanup_entries
+    // can reliably identify and remove them by the suffix marker.
     let session_suffix = generate_unique_suffix(&existing_servers, new_servers)?;
-    let rename_map = detect_conflicts(&existing_servers, new_servers, &session_suffix);
+    let rename_map: RenameMap = new_servers
+        .keys()
+        .map(|name| (name.clone(), format!("{name}__{session_suffix}")))
+        .collect();
 
     debug!(
         "MCP write: {} servers, {} conflicts, suffix: {}",
