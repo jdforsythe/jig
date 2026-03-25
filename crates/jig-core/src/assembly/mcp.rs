@@ -166,9 +166,13 @@ pub fn write_atomic(
 
     let cwd_key = canonical_cwd.to_string_lossy().into_owned();
 
-    // Extract existing mcpServers for conflict detection
+    // Extract existing mcpServers for conflict detection.
+    // Use direct map navigation — pointer() interprets '/' in cwd_key as a
+    // JSON Pointer separator, which breaks on absolute paths.
     let existing_servers: HashMap<String, Value> = root
-        .pointer(&format!("/projects/{cwd_key}/mcpServers"))
+        .get("projects")
+        .and_then(|p| p.get(&cwd_key))
+        .and_then(|c| c.get("mcpServers"))
         .and_then(Value::as_object)
         .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         .unwrap_or_default();
@@ -330,8 +334,12 @@ pub fn cleanup_entries(
         if let Ok(mut root) = serde_json::from_str::<Value>(&contents) {
             let cwd_key = canonical_cwd.to_string_lossy().into_owned();
 
+            // Use direct map navigation — pointer_mut() interprets '/' in cwd_key
+            // as a JSON Pointer separator, which breaks on absolute paths.
             if let Some(mcp_servers) = root
-                .pointer_mut(&format!("/projects/{cwd_key}/mcpServers"))
+                .get_mut("projects")
+                .and_then(|p| p.get_mut(cwd_key.as_str()))
+                .and_then(|c| c.get_mut("mcpServers"))
                 .and_then(Value::as_object_mut)
             {
                 // Remove all entries with our session suffix
