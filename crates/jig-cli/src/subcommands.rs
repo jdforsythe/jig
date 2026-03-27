@@ -15,17 +15,17 @@ pub fn dispatch(cmd: &Commands, cwd: &Path, json: bool) -> Result<(), Box<dyn st
         Commands::Persona(args) => handle_persona(&args.subcommand, json),
         Commands::Skill(args) => handle_skill(&args.subcommand, json),
         Commands::History(args) => handle_history(args.limit, args.verbose, json),
-        Commands::Doctor(args) => handle_doctor_to(cwd, args.audit, &mut std::io::stdout()),
+        Commands::Doctor(args) => handle_doctor_to(cwd, args.audit, args.migrate, &mut std::io::stdout()),
         Commands::Config(args) => handle_config(&args.subcommand, cwd, json),
         Commands::Init => handle_init(cwd),
-        Commands::Sync(_args) => handle_sync(),
+        Commands::Sync(args) => handle_sync(args, cwd),
         Commands::Import(args) => handle_import(args.url.as_deref(), &args.scope, args.dry_run, cwd),
         Commands::Diff(args) => handle_diff(&args.config, cwd),
         Commands::Completions(_) => Ok(()), // handled in main.rs before routing here
     }
 }
 
-fn handle_template(sub: &TemplateSubcommand, _cwd: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn handle_template(sub: &TemplateSubcommand, cwd: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     match sub {
         TemplateSubcommand::List => {
             let templates = builtin_template_refs();
@@ -56,6 +56,39 @@ fn handle_template(sub: &TemplateSubcommand, _cwd: &Path, json: bool) -> Result<
                 let available: Vec<_> = templates.iter().map(|t| t.name.as_str()).collect();
                 eprintln!("Template '{name}' not found. Available: {}", available.join(", "));
                 std::process::exit(1);
+            }
+        }
+        TemplateSubcommand::New => {
+            #[cfg(feature = "tui")]
+            {
+                jig_tui::editor::run_editor_tui(
+                    jig_tui::editor::EditorEntryPoint::NewTemplate,
+                    None,
+                    cwd,
+                )
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                let _ = cwd;
+                eprintln!("Editor mode requires TUI feature. Build without --no-default-features.");
+            }
+        }
+        TemplateSubcommand::Edit { name } => {
+            #[cfg(feature = "tui")]
+            {
+                let draft = jig_core::editor::load_draft_for_template(name);
+                jig_tui::editor::run_editor_tui(
+                    jig_tui::editor::EditorEntryPoint::EditTemplate,
+                    Some(draft),
+                    cwd,
+                )
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                let _ = (name, cwd);
+                eprintln!("Editor mode requires TUI feature.");
             }
         }
     }
@@ -109,17 +142,216 @@ fn handle_persona(sub: &PersonaSubcommand, json: bool) -> Result<(), Box<dyn std
 }
 
 fn handle_skill(sub: &SkillSubcommand, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use jig_core::assembly::skill_index::{read_index, search};
+    use jig_core::assembly::skills_lock::{read_skills_lock, verify_skill_integrity};
+    use jig_core::assembly::source_resolver::{skill_file_path, override_skill_path};
+
     match sub {
-        SkillSubcommand::List => {
-            // TODO: list cached skills from ~/.config/jig/skills/
-            if json {
-                println!("[]");
-            } else {
-                println!("No skills installed. Run `jig sync` to fetch skills.");
+        SkillSubcommand::List { source } => {
+            let index = read_index();
+            let mut found = false;
+            for (src_name, skills) in &index.entries {
+                if let Some(filter) = source {
+                    if src_name != filter { continue; }
+                }
+                for skill in skills {
+                    found = true;
+                    if json {
+                        println!("{}", serde_json::to_string(skill)?);
+                    } else {
+                        let desc = skill.meta.description.as_deref().unwrap_or("");
+                        println!("{}/{}: {}", src_name, skill.skill_name, desc);
+                    }
+                }
+            }
+            if !found {
+                if json {
+                    println!("[]");
+                } else {
+                    println!("No skills installed. Run `jig sync` to fetch skills from configured sources.");
+                }
             }
         }
+
+        SkillSubcommand::Search { query, json: json_flag } => {
+            let index = read_index();
+            let results = search(&index, query);
+            if *json_flag || json {
+                println!("{}", serde_json::to_string_pretty(&results)?);
+            } else if results.is_empty() {
+                println!("No skills match '{query}'.");
+            } else {
+                for skill in &results {
+                    let desc = skill.meta.description.as_deref().unwrap_or("");
+                    let tags = skill.meta.tags.as_deref()
+                        .map(|t| format!(" [{}]", t.join(", ")))
+                        .unwrap_or_default();
+                    println!("{}/{}{}: {}", skill.source, skill.skill_name, tags, desc);
+                }
+            }
+        }
+
+        SkillSubcommand::Info { source, skill } => {
+            let path = skill_file_path(source, skill);
+            let override_path = override_skill_path(source, skill);
+
+            println!("Source:  {source}");
+            println!("Skill:   {skill}");
+
+            let active_path = if override_path.exists() {
+                println!("Status:  [OVERRIDDEN]");
+                &override_path
+            } else if path.exists() {
+                println!("Status:  installed");
+                &path
+            } else {
+                println!("Status:  not installed (run `jig sync`)");
+                return Ok(());
+            };
+
+            println!("Path:    {}", active_path.display());
+
+            // Show metadata
+            if let Ok(meta) = jig_core::assembly::skill_meta::parse_frontmatter(active_path) {
+                if let Some(name) = &meta.name { println!("Name:    {name}"); }
+                if let Some(desc) = &meta.description { println!("Desc:    {desc}"); }
+                if let Some(tags) = &meta.tags { println!("Tags:    {}", tags.join(", ")); }
+                if let Some(ver) = &meta.version { println!("Version: {ver}"); }
+            }
+
+            // Integrity check
+            match verify_skill_integrity(source, skill, &path) {
+                Some(true) => println!("Integrity: verified"),
+                Some(false) => println!("Integrity: MISMATCH — file may have been tampered with"),
+                None => println!("Integrity: - not in lock file (run `jig sync` to update)"),
+            }
+
+            // Lock info
+            let lock = read_skills_lock();
+            if let Some(source_entry) = lock.sources.get(source.as_str()) {
+                println!("Fetched: {}", source_entry.fetched_at);
+                println!("SHA:     {}", &source_entry.sha[..8.min(source_entry.sha.len())]);
+            }
+        }
+
+        SkillSubcommand::Override { source, skill } => {
+            let upstream = skill_file_path(source, skill);
+            if !upstream.exists() {
+                eprintln!("Skill '{source}/{skill}' is not installed. Run `jig sync` first.");
+                std::process::exit(1);
+            }
+
+            let override_dest = override_skill_path(source, skill);
+            if let Some(parent) = override_dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            std::fs::copy(&upstream, &override_dest)?;
+            println!("Created override: {}", override_dest.display());
+            println!("Edit the file to customize, then use `jig skill diff {source} {skill}` to review changes.");
+        }
+
+        SkillSubcommand::Diff { source, skill } => {
+            let upstream = skill_file_path(source, skill);
+            let override_path = override_skill_path(source, skill);
+
+            if !override_path.exists() {
+                println!("No local override for '{source}/{skill}'.");
+                println!("Use `jig skill override {source} {skill}` to create one.");
+                return Ok(());
+            }
+
+            if !upstream.exists() {
+                println!("Upstream not found for '{source}/{skill}'. Run `jig sync` first.");
+                return Ok(());
+            }
+
+            let upstream_content = std::fs::read_to_string(&upstream)?;
+            let override_content = std::fs::read_to_string(&override_path)?;
+
+            if upstream_content == override_content {
+                println!("No differences.");
+                return Ok(());
+            }
+
+            // Simple line-by-line diff output
+            println!("--- upstream/{source}/{skill}.md");
+            println!("+++ local-override/{source}/{skill}.md");
+
+            let diff = compute_diff(&upstream_content, &override_content);
+            println!("{diff}");
+        }
+
+        SkillSubcommand::Reset { source, skill, yes } => {
+            let override_path = override_skill_path(source, skill);
+
+            if !override_path.exists() {
+                println!("No local override for '{source}/{skill}'.");
+                return Ok(());
+            }
+
+            if !yes {
+                eprint!("Reset '{source}/{skill}' to upstream? This will delete your local override. [y/N] ");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+
+            std::fs::remove_file(&override_path)?;
+
+            // Clean up empty override directory
+            if let Some(parent) = override_path.parent() {
+                if parent.exists() {
+                    if let Ok(mut entries) = std::fs::read_dir(parent) {
+                        if entries.next().is_none() {
+                            let _ = std::fs::remove_dir(parent);
+                        }
+                    }
+                }
+            }
+
+            println!("Reset '{source}/{skill}' — override removed.");
+        }
     }
+
     Ok(())
+}
+
+fn compute_diff(original: &str, modified: &str) -> String {
+    let orig_lines: Vec<&str> = original.lines().collect();
+    let mod_lines: Vec<&str> = modified.lines().collect();
+
+    let mut output = String::new();
+
+    let orig_len = orig_lines.len();
+    let mod_len = mod_lines.len();
+
+    // Simple line-by-line comparison (not a true diff algorithm but sufficient for display)
+    let max_len = orig_len.max(mod_len);
+
+    for i in 0..max_len {
+        match (orig_lines.get(i), mod_lines.get(i)) {
+            (Some(o), Some(m)) if o == m => {
+                output.push_str(&format!(" {o}\n"));
+            }
+            (Some(o), Some(m)) => {
+                output.push_str(&format!("-{o}\n"));
+                output.push_str(&format!("+{m}\n"));
+            }
+            (Some(o), None) => {
+                output.push_str(&format!("-{o}\n"));
+            }
+            (None, Some(m)) => {
+                output.push_str(&format!("+{m}\n"));
+            }
+            (None, None) => {}
+        }
+    }
+
+    output
 }
 
 fn handle_history(limit: usize, verbose: bool, json: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -202,6 +434,7 @@ fn handle_history(limit: usize, verbose: bool, json: bool) -> Result<(), Box<dyn
 pub(crate) fn handle_doctor_to<W: std::io::Write>(
     cwd: &Path,
     audit: bool,
+    migrate: bool,
     out: &mut W,
 ) -> Result<(), Box<dyn std::error::Error>> {
     writeln!(out, "jig doctor — checking system state...")?;
@@ -245,7 +478,7 @@ pub(crate) fn handle_doctor_to<W: std::io::Write>(
     writeln!(out, "Done.")?;
 
     if audit {
-        writeln!(out, "")?;
+        writeln!(out)?;
         writeln!(out, "jig doctor --audit — running security checks...")?;
 
         // Check global config file permissions (Unix only)
@@ -317,6 +550,90 @@ pub(crate) fn handle_doctor_to<W: std::io::Write>(
         }
 
         writeln!(out, "Audit complete.")?;
+    }
+
+    if migrate {
+        use jig_core::config::migrate::{needs_migration, CURRENT_SCHEMA_VERSION};
+        use jig_core::config::migration::apply_migration_chain;
+        use std::path::PathBuf;
+
+        writeln!(out)?;
+        writeln!(out, "jig doctor --migrate — checking schema versions...")?;
+
+        let global_config = home::home_dir()
+            .unwrap_or_default()
+            .join(".config")
+            .join("jig")
+            .join("config.yaml");
+
+        let project_path = cwd.join(".jig.yaml");
+        let local_path = cwd.join(".jig.local.yaml");
+
+        let paths: Vec<PathBuf> = [global_config, project_path, local_path]
+            .into_iter()
+            .filter(|p| p.exists())
+            .collect();
+
+        if paths.is_empty() {
+            writeln!(out, "  No config files found.")?;
+        }
+
+        for path in &paths {
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    writeln!(out, "  ✗ Could not read {}: {e}", path.display())?;
+                    continue;
+                }
+            };
+            let version: u32 = serde_yaml::from_str::<serde_json::Value>(&content)
+                .ok()
+                .and_then(|v| v.get("schema").and_then(|s| s.as_u64()))
+                .map(|v| v as u32)
+                .unwrap_or(1);
+
+            if needs_migration(version) {
+                writeln!(
+                    out,
+                    "  ! {} requires migration (schema v{} → v{})",
+                    path.display(),
+                    version,
+                    CURRENT_SCHEMA_VERSION
+                )?;
+                let result = apply_migration_chain(path, version, |_changes| {
+                    // Auto-confirm when --migrate is explicitly passed
+                    true
+                });
+                match result {
+                    Ok(outcome) if !outcome.changes.is_empty() => {
+                        writeln!(
+                            out,
+                            "  ✓ Migrated {} (backup: {})",
+                            path.display(),
+                            outcome.backup_path.display()
+                        )?;
+                    }
+                    Ok(_) => {
+                        writeln!(
+                            out,
+                            "  ✓ {} is already at current schema version",
+                            path.display()
+                        )?;
+                    }
+                    Err(e) => {
+                        writeln!(out, "  ✗ Migration failed for {}: {e}", path.display())?;
+                    }
+                }
+            } else {
+                writeln!(
+                    out,
+                    "  ✓ {} schema version is current (v{version})",
+                    path.display()
+                )?;
+            }
+        }
+
+        writeln!(out, "Migration check complete.")?;
     }
 
     Ok(())
@@ -662,9 +979,92 @@ fn scaffold_jig_yaml(template: &str, persona: &str) -> String {
     )
 }
 
-fn handle_sync() -> Result<(), Box<dyn std::error::Error>> {
-    println!("jig sync — not yet implemented.");
+fn handle_sync(args: &crate::cli::SyncArgs, cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use jig_core::assembly::sync::{SyncOptions, sync_sources, SyncAction};
+    use jig_core::assembly::skills_lock::update_skills_lock;
+    use jig_core::assembly::skill_index::rebuild_index;
+
+    let sources = collect_sources(cwd);
+
+    if sources.is_empty() {
+        println!("No sources configured.");
+        println!("Add profile.sources to ~/.config/jig/config.yaml or .jig.yaml:");
+        println!("  profile:");
+        println!("    sources:");
+        println!("      my-skills:");
+        println!("        url: https://github.com/example/skills");
+        return Ok(());
+    }
+
+    let opts = SyncOptions { frozen: args.frozen, check: args.check };
+
+    let outcomes = sync_sources(&sources, &opts)?;
+
+    for outcome in &outcomes {
+        let status = match &outcome.action {
+            SyncAction::Cloned => format!("cloned {}", outcome.source_name),
+            SyncAction::Updated { from_sha } => format!(
+                "updated {} ({} -> {})",
+                outcome.source_name,
+                &from_sha[..8.min(from_sha.len())],
+                outcome.new_sha.as_deref().map(|s| &s[..8.min(s.len())]).unwrap_or("?")
+            ),
+            SyncAction::AlreadyUpToDate => format!("{} already up to date", outcome.source_name),
+            SyncAction::BehindCheck { local_sha, remote_sha } => format!(
+                "{} is behind (local: {}, remote: {})",
+                outcome.source_name,
+                &local_sha[..8.min(local_sha.len())],
+                &remote_sha[..8.min(remote_sha.len())]
+            ),
+            SyncAction::UpToDateCheck => format!("{} is up to date", outcome.source_name),
+            SyncAction::SkippedNoUrl => format!("{} (not cloned yet)", outcome.source_name),
+        };
+        println!("{status}");
+    }
+
+    if !args.check {
+        update_skills_lock(&outcomes, &sources)?;
+        if let Err(e) = rebuild_index() {
+            eprintln!("Warning: Failed to rebuild skill index: {e}");
+        }
+    }
+
     Ok(())
+}
+
+fn collect_sources(cwd: &Path) -> std::collections::HashMap<String, jig_core::config::schema::SourceConfig> {
+    use jig_core::config::schema::JigConfig;
+
+    let mut sources = std::collections::HashMap::new();
+
+    // Load global config
+    let global_path = home::home_dir()
+        .unwrap_or_default()
+        .join(".config").join("jig").join("config.yaml");
+
+    let local_path = cwd.join(".jig.local.yaml");
+    let project_path = cwd.join(".jig.yaml");
+
+    let paths: &[&std::path::Path] = &[
+        &global_path,
+        &project_path,
+        &local_path,
+    ];
+
+    for path in paths {
+        if !path.exists() { continue; }
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(config) = serde_yaml::from_str::<JigConfig>(&content) {
+                if let Some(profile) = &config.profile {
+                    if let Some(srcs) = &profile.sources {
+                        sources.extend(srcs.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    sources
 }
 
 fn handle_import(
@@ -941,7 +1341,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::<u8>::new();
-        handle_doctor_to(dir.path(), false, &mut out).unwrap();
+        handle_doctor_to(dir.path(), false, false, &mut out).unwrap();
         std::env::set_var("PATH", &original_path);
 
         let output = String::from_utf8(out).unwrap();
@@ -955,7 +1355,7 @@ mod tests {
     fn test_handle_doctor_audit_flag() {
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::<u8>::new();
-        handle_doctor_to(dir.path(), true, &mut out).unwrap();
+        handle_doctor_to(dir.path(), true, false, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(
             output.contains("audit"),
@@ -967,9 +1367,23 @@ mod tests {
     fn test_handle_doctor_no_audit_flag() {
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::<u8>::new();
-        handle_doctor_to(dir.path(), false, &mut out).unwrap();
+        handle_doctor_to(dir.path(), false, false, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(!output.contains("security checks"), "doctor without --audit must not show audit section");
+    }
+
+    #[test]
+    fn test_handle_doctor_migrate_flag_reports_schema_status() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write a config file with current schema version
+        std::fs::write(dir.path().join(".jig.yaml"), "schema: 1\n").unwrap();
+        let mut out = Vec::<u8>::new();
+        handle_doctor_to(dir.path(), false, true, &mut out).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("Migration check complete"),
+            "doctor --migrate must include migration output, got: {output}"
+        );
     }
 
     #[test]
@@ -995,5 +1409,62 @@ mod tests {
 
         let result = handle_diff(&other, dir.path());
         assert!(result.is_ok(), "handle_diff must not error when configs differ");
+    }
+}
+
+#[cfg(test)]
+mod skill_tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_diff_no_changes() {
+        let content = "line1\nline2\n";
+        let diff = compute_diff(content, content);
+        // Should have context lines (space prefix) — no - or + lines
+        assert!(!diff.contains('-') && !diff.contains('+'));
+    }
+
+    #[test]
+    fn test_compute_diff_added_line() {
+        let orig = "line1\n";
+        let modified = "line1\nline2\n";
+        let diff = compute_diff(orig, modified);
+        assert!(diff.contains("+line2"));
+    }
+
+    #[test]
+    fn test_compute_diff_removed_line() {
+        let orig = "line1\nline2\n";
+        let modified = "line1\n";
+        let diff = compute_diff(orig, modified);
+        assert!(diff.contains("-line2"));
+    }
+
+    #[test]
+    fn test_collect_sources_nonexistent_dir_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let sources = collect_sources(dir.path());
+        assert!(sources.is_empty());
+    }
+
+    #[test]
+    fn test_collect_sources_reads_project_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "schema: 1\nprofile:\n  sources:\n    my-skills:\n      url: https://github.com/example/skills\n";
+        std::fs::write(dir.path().join(".jig.yaml"), yaml).unwrap();
+        let sources = collect_sources(dir.path());
+        assert!(sources.contains_key("my-skills"), "should find sources from .jig.yaml");
+        assert_eq!(sources["my-skills"].url, "https://github.com/example/skills");
+    }
+
+    #[test]
+    fn test_handle_skill_list_no_index() {
+        // With no skill index, should output "No skills installed"
+        // We can't easily test handle_skill directly since it prints to stdout
+        // But we can test the logic components
+        let index = jig_core::assembly::skill_index::read_index();
+        let results = jig_core::assembly::skill_index::search(&index, "test");
+        // May be empty or have skills depending on test env
+        let _ = results;
     }
 }

@@ -24,6 +24,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 scopeguard = { workspace = true }
 tempfile = { workspace = true }
+toml = { workspace = true }
 libc = "0.2"
 
 [dependencies.ureq]

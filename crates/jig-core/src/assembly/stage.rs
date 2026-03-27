@@ -56,6 +56,7 @@ struct SessionGuard {
     temp_dir: Option<tempfile::TempDir>,
     mcp_written: bool,
     lock_written: bool,
+    global_lock_written: bool,
     session_suffix: String,
     canonical_cwd: PathBuf,
     exit_outcome: Option<ExitOutcome>,
@@ -78,6 +79,9 @@ impl Drop for SessionGuard {
         }
         if self.lock_written {
             super::lockfile::remove_lock(&self.canonical_cwd);
+        }
+        if self.global_lock_written {
+            super::global_lock::remove_global_lock(&self.session_id);
         }
         // temp_dir auto-cleans via TempDir::Drop when Some
 
@@ -164,13 +168,35 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
 
     // Write lock file so concurrent jig instances can detect this session
     super::lockfile::write_lock(&canonical_cwd, pid, &session_id);
+    // Write global lock so active sessions can be enumerated across projects
+    super::global_lock::write_global_lock(pid, &session_id, &canonical_cwd);
 
     // Step 8: Stage temp dir
     let temp_dir = create_temp_dir()?;
     let temp_path = temp_dir.path().to_owned();
 
-    // Step 9: Symlink skills into temp dir
+    // Step 9a: Symlink local skills into temp dir (jail: project_dir)
     stage_local_skills(&temp_path, &resolved.local_skills, &opts.project_dir)?;
+
+    // Step 9b: Resolve from_source skills and symlink them (jail: ~/.config/jig)
+    if !resolved.skills.is_empty() {
+        match super::source_resolver::resolve_from_source_skills(&resolved.skills) {
+            Ok(source_paths) if !source_paths.is_empty() => {
+                let jig_config_root = home::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("/tmp"))
+                    .join(".config")
+                    .join("jig");
+                if let Err(e) = stage_local_skills(&temp_path, &source_paths, &jig_config_root) {
+                    tracing::warn!("Failed to stage source skills: {e}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // Not fatal — warn and continue without source skills
+                tracing::warn!("Skill source resolution: {e}");
+            }
+        }
+    }
 
     // Step 10: Write MCP to ~/.claude.json (atomic, flock, conflict-detect, refcount)
     let mcp_result = if !resolved.mcp_servers.is_empty() {
@@ -183,6 +209,7 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
         temp_dir: Some(temp_dir),
         mcp_written: mcp_result.is_some(),
         lock_written: true,
+        global_lock_written: true,
         session_suffix: mcp_result
             .as_ref()
             .map(|r| r.session_suffix.clone())
@@ -342,7 +369,7 @@ fn run_dry_run(
                 .map(|(h, _)| h.display_command())
                 .collect::<Vec<_>>(),
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).expect("output is always serializable"));
     } else {
         println!("# Dry run — resolved claude invocation:");
         println!("claude {}", claude_args.join(" "));

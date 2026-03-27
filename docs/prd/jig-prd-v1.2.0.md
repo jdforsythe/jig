@@ -4,7 +4,7 @@
 
 **Date:** 2026-03-26
 **Supersedes:** jig-prd-v1.1.0.md
-**Status:** Phase 1 Complete — Phase 2 Mostly Complete — Phase 3 Planning
+**Status:** Phase 1 Complete — Phase 2 Mostly Complete — Phase 3 Complete
 
 ---
 
@@ -120,9 +120,9 @@ P0 (config precedence, hook execution, env var expansion), P2 (session managemen
 
 - [x] **"None" option for template and persona** — `None (no template)` and `None (no persona)` as first entries in TUI lists. No template → skips template config overlay. No persona → omits `--append-system-prompt-file`.
 
-- [ ] **"Custom / Ad-hoc" entry in template list** — *deferred to Phase 3* — `[Custom / ad-hoc]` below None; Enter opens Editor Mode inline. Fields: allowed/disallowed tools, persona, MCP servers, skills, hooks, model, context fragments. Actions: `[Launch]` (one-off) and `[Save as template]`. Same Editor Mode screen as `jig template new|edit`.
+- [x] **"Custom / Ad-hoc" entry in template list** — *deferred to Phase 3* — `[Custom / ad-hoc]` below None; Enter opens Editor Mode inline. Fields: allowed/disallowed tools, persona, MCP servers, skills, hooks, model, context fragments. Actions: `[Launch]` (one-off) and `[Save as template]`. Same Editor Mode screen as `jig template new|edit`.
 
-- [ ] **Editor Mode** — *deferred to Phase 3* — section-based TUI editing (skills, MCP, permissions, persona, context, hooks, flags). Undo stack (Ctrl-Z). Scope selection (global/project) when saving. Live preview. Accessible via `e` on selected template/persona, Custom ad-hoc entry, and `jig template new`. Vim keybindings + which-key popup.
+- [x] **Editor Mode** — *deferred to Phase 3* — section-based TUI editing (skills, MCP, permissions, persona, context, hooks, flags). Undo stack (Ctrl-Z). Scope selection (global/project) when saving. Live preview. Accessible via `e` on selected template/persona, Custom ad-hoc entry, and `jig template new`. Vim keybindings + which-key popup.
 
 - [x] **`jig init` interactive wizard** — project-type detection from file extensions, built-in template suggestion, `.jig.yaml` scaffold with commented examples for MCP/skills/hooks, mention of `.jig.local.yaml` for personal overrides.
 
@@ -142,55 +142,55 @@ P0 (config precedence, hook execution, env var expansion), P2 (session managemen
 
 ### P4 — Security + Infrastructure [PARTIAL]
 
-- [ ] `from_source` skill resolution — *moved to Phase 3 P2*
+- [x] `from_source` skill resolution — *completed in Phase 3 P2*
 - [ ] Plugin processing — *moved to Phase 4*
 - [x] `extends` array DFS resolution + cycle detection (`config/resolve.rs`)
 - [x] `persona.extends` enforcement (only `.jig.local.yaml`, validated in `validate_layer()`)
 - [x] Global config ownership check (0600/0640, in `jig doctor --audit`)
 - [x] Credential masking in dry-run JSON output (MCP env vars shown as `***`; history stores server names only)
 - [x] Worktree detection + project `.jig.lock` concurrency warnings (`worktree.rs`, `assembly/lockfile.rs`)
-- [ ] Schema migration (v1→v2 with confirmation + timestamped backup) — *moved to Phase 3 P1*
+- [x] Schema migration (v1→v2 with confirmation + timestamped backup) — *completed in Phase 3 P1*
 - [x] `jig doctor --audit` (config validation, file permission checks, worktree detection)
 - [x] MCP first-run approval (SHA-256 hash cache, same pattern as hook approval)
-- [ ] CI/CD: GitHub Releases binaries (macOS/Linux x86/arm64), headless size gate (< 5 MB) — *moved to Phase 3 P1*
-- [ ] Homebrew tap + curl installer + `cargo binstall` support — *moved to Phase 3 P1*
-- [x] Project `.jig.lock` lock file (global `~/.config/jig/jig.lock` — *moved to Phase 3 P1*)
+- [x] CI/CD: GitHub Releases binaries (macOS/Linux x86/arm64), headless size gate (< 5 MB) — *completed in Phase 3 P1*
+- [x] Homebrew tap + curl installer + `cargo binstall` support — *completed in Phase 3 P1* (Homebrew formula in separate `jdforsythe/homebrew-jig` repo)
+- [x] Project `.jig.lock` lock file (global `~/.config/jig/jig.lock` — *completed in Phase 3 P1*)
 
 ---
 
-## Phase 3 — Editor Mode + Skill Registry + Distribution [PLANNED]
+## Phase 3 — Editor Mode + Skill Registry + Distribution [COMPLETE]
 
 ### P0 — TUI Editor Mode (deferred from Phase 2 P1)
 
-- [ ] **"Custom / Ad-hoc" entry in template list** — `[Custom / ad-hoc]` below `None (no template)`. Pressing Enter opens Editor Mode inline rather than launching. Actions: `[Launch]` (one-off, no save) and `[Save as template]`. Must use the same Editor Mode screen as `jig template new|edit` — no separate screen.
+- [x] **"Custom / Ad-hoc" entry in template list** — `[Custom / ad-hoc]` below `None (no template)`. Pressing Enter opens Editor Mode inline rather than launching. Actions: `[Launch]` (one-off, no save) and `[Save as template]`. Must use the same Editor Mode screen as `jig template new|edit` — no separate screen.
 
-- [ ] **Editor Mode** — section-based TUI editing screen. Sections: skills, MCP servers, permissions (allowed/disallowed tools), persona, context fragments, hooks, model, passthrough flags. Undo stack (Ctrl-Z). Scope selector (global/project/local) shown when saving. Live preview pane updates as fields change. Entry points: `e` on selected template/persona in main TUI, `[Custom / ad-hoc]` entry, `jig template new`. Vim keybindings throughout; which-key popup shows available keys.
+- [x] **Editor Mode** — section-based TUI editing screen. Sections: skills, MCP servers, permissions (allowed/disallowed tools), persona, context fragments, hooks, model, passthrough flags. Undo stack (Ctrl-Z). Scope selector (global/project/local) shown when saving. Live preview pane updates as fields change. Entry points: `e` on selected template/persona in main TUI, `[Custom / ad-hoc]` entry, `jig template new`. Vim keybindings throughout; which-key popup shows available keys.
 
 ### P1 — Infrastructure (deferred from Phase 2 P4)
 
-- [ ] **Schema migration v1→v2** — `jig doctor --migrate` command: detect outdated schema, show diff of changes, prompt confirmation, write backup (`<file>.bak.<timestamp>`), write migrated file. Must be chainable for future versions. Currently `v1` is the only version; implement infrastructure so adding v2 is a one-file change.
+- [x] **Schema migration v1→v2** — `jig doctor --migrate` command: detect outdated schema, show diff of changes, prompt confirmation, write backup (`<file>.bak.<timestamp>`), write migrated file. Must be chainable for future versions. Currently `v1` is the only version; infrastructure implemented so adding v2 is a one-file change.
 
-- [ ] **Global `~/.config/jig/jig.lock`** — alongside the project-level `.jig.lock`, write a global lock entry in `~/.config/jig/jig.lock` (JSONL, one record per active session). Enables `jig ps` in the future and cross-directory session awareness. Cleanup in `SessionGuard::drop()` (Category A).
+- [x] **Global `~/.config/jig/jig.lock`** — alongside the project-level `.jig.lock`, write a global lock entry in `~/.config/jig/jig.lock` (JSONL, one record per active session). Enables `jig ps` in the future and cross-directory session awareness. Cleanup in `SessionGuard::drop()` (Category A).
 
-- [ ] **CI/CD: GitHub Releases binaries** — GitHub Actions workflow: build macOS (arm64/x86_64) and Linux (arm64/x86_64) binaries; universal macOS binary via `lipo`; headless binary size gate (< 5 MB, `--no-default-features`); attach to GitHub Releases on tag push.
+- [x] **CI/CD: GitHub Releases binaries** — GitHub Actions workflow: build macOS (arm64/x86_64) and Linux (arm64/x86_64) binaries; universal macOS binary via `lipo`; headless binary size gate (< 5 MB, `--no-default-features`); attach to GitHub Releases on tag push.
 
-- [ ] **Homebrew tap + curl installer + `cargo binstall` support** — `jdforsythe/homebrew-jig` tap with formula; `curl | sh` installer script targeting GitHub Releases; `cargo binstall` metadata in `Cargo.toml`.
+- [x] **Homebrew tap + curl installer + `cargo binstall` support** — `jdforsythe/homebrew-jig` tap with formula (separate repo); `install.sh` curl installer script targeting GitHub Releases; `cargo binstall` metadata in `Cargo.toml`.
 
 ### P2 — Skill Registry + Sync (was Phase 3, absorbs `from_source`)
 
-- [ ] **`from_source` skill resolution** — (moved from Phase 2 P4) — resolve named skill sources (e.g. `source: github:org/repo/path`) to local paths. Sources defined in global or project config. Error if source is unresolvable without a `jig sync`.
+- [x] **`from_source` skill resolution** — (moved from Phase 2 P4) — resolve named skill sources to local paths via `SourceConfig` in global/project config. Error with actionable message if source not yet synced.
 
-- [ ] **`jig sync`** — fetch/update skills from configured git sources (shell out to `git`, not `git2`; `--no-recurse-submodules`). `--frozen` refuses to update (CI mode). `--check` reports staleness without pulling.
+- [x] **`jig sync`** — fetch/update skills from configured git sources (shell out to `git`, not `git2`; `--no-recurse-submodules`). `--frozen` refuses to update (CI mode). `--check` reports staleness without pulling.
 
-- [ ] **Skill indexing from `SKILL.md` frontmatter** — parse YAML frontmatter (`name`, `description`, `tags`, `version`) from each skill file. Used by `jig skill search`.
+- [x] **Skill indexing from `SKILL.md` frontmatter** — parse YAML frontmatter (`name`, `description`, `tags`, `version`) from each skill file. Used by `jig skill search`. Soft parse: malformed frontmatter returns defaults, never errors.
 
-- [ ] **Full-copy override layer** — skills from sources are copied into `~/.config/jig/skills/`; local overrides tracked separately; `jig skill diff` shows diff from upstream; `jig skill reset` restores upstream version.
+- [x] **Full-copy override layer** — skills from sources cached in `~/.config/jig/skills/<source>/`; overrides tracked in `~/.config/jig/skills-override/<source>/`; `jig skill diff` shows unified diff from upstream; `jig skill reset` removes override to restore upstream.
 
-- [ ] **`jig skill search|info|override|diff|reset`** — search indexed skills by tag/keyword; show metadata; create local override; diff vs upstream; restore upstream.
+- [x] **`jig skill search|info|override|diff|reset`** — search indexed skills by tag/keyword; show metadata; create local override; diff vs upstream; restore upstream. Plus `jig skill list [--source S]`.
 
-- [ ] **SHA-256 integrity verification** — verify fetched skill files against lockfile hashes on load; warn if tampered.
+- [x] **SHA-256 integrity verification** — verify fetched skill files against lockfile hashes on load; warn if tampered.
 
-- [ ] **Lock file update on sync** — `jig sync` updates `~/.config/jig/skills.lock` with source SHAs and fetched-at timestamps.
+- [x] **Lock file update on sync** — `jig sync` updates `~/.config/jig/skills.lock` (TOML) with source SHAs and fetched-at timestamps.
 
 ---
 

@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test before release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  build:
+    name: Build ${{ matrix.artifact }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: jig-linux-x86_64
+            cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: jig-linux-aarch64
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: jig-macos-x86_64
+            cross: false
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: jig-macos-arm64
+            cross: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install cross (Linux arm64 only)
+        if: matrix.cross
+        run: cargo install cross --locked
+      - name: Build release binary (with cross)
+        if: matrix.cross
+        run: cross build --release --no-default-features -p jig-cli --target ${{ matrix.target }}
+      - name: Build release binary (native)
+        if: "!matrix.cross"
+        run: cargo build --release --no-default-features -p jig-cli --target ${{ matrix.target }}
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/jig dist/${{ matrix.artifact }}
+          chmod +x dist/${{ matrix.artifact }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          retention-days: 1
+
+  universal-macos:
+    name: Build macOS Universal Binary
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: jig-macos-x86_64
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: jig-macos-arm64
+          path: dist/
+      - name: Create universal binary via lipo
+        run: |
+          chmod +x dist/jig-macos-x86_64 dist/jig-macos-arm64
+          lipo -create \
+            -output dist/jig-macos-universal \
+            dist/jig-macos-x86_64 \
+            dist/jig-macos-arm64
+          chmod +x dist/jig-macos-universal
+          lipo -info dist/jig-macos-universal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jig-macos-universal
+          path: dist/jig-macos-universal
+          retention-days: 1
+
+  release:
+    name: Create GitHub Release
+    needs: [build, universal-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+      - name: List artifacts
+        run: ls -la dist/
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/jig-linux-x86_64
+            dist/jig-linux-aarch64
+            dist/jig-macos-x86_64
+            dist/jig-macos-arm64
+            dist/jig-macos-universal
+          generate_release_notes: true
+          fail_on_unmatched_files: true

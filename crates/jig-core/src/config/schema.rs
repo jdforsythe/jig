@@ -63,6 +63,20 @@ pub struct Profile {
     pub settings: Option<Settings>,
     pub env: Option<HashMap<String, String>>,
     pub plugins: Option<Vec<PluginRef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<std::collections::HashMap<String, SourceConfig>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceConfig {
+    /// Git URL of the source repository.
+    pub url: String,
+    /// Optional subdirectory within the repo to use as the skills root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Optional branch/tag/commit to pin. Defaults to HEAD of default branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

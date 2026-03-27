@@ -38,6 +38,8 @@ pub enum AppMode {
     WhichKey,
     Confirm,
     History,
+    Editor,
+    EditorSave,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +77,7 @@ pub struct App {
     last_preview_update: Instant,
     pub history_lines: Vec<String>,
     pub history_scroll: u16,
+    pub editor_state: Option<crate::editor::EditorState>,
 }
 
 impl Default for App {
@@ -86,6 +89,7 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         let mut template_names: Vec<String> = vec!["None (no template)".to_owned()];
+        template_names.insert(1, "[Custom / ad-hoc]".to_owned());
         template_names.extend(builtin_templates().into_iter().map(|t| t.name));
 
         let persona_names = vec![
@@ -118,6 +122,7 @@ impl App {
             last_preview_update: Instant::now(),
             history_lines: Vec::new(),
             history_scroll: 0,
+            editor_state: None,
         }
     }
 
@@ -133,6 +138,11 @@ impl App {
             }
             AppMode::History => self.handle_history_key(key),
             AppMode::Normal | AppMode::Confirm => self.handle_normal_key(key),
+            AppMode::Editor | AppMode::EditorSave => {
+                if let Some(editor) = self.editor_state.as_mut() {
+                    editor.handle_key(key, &mut self.mode);
+                }
+            }
         }
     }
 
@@ -173,8 +183,31 @@ impl App {
                 let template = self.templates.selected_item().map(str::to_owned);
                 let persona = self.personas.selected_item().map(str::to_owned);
                 if let (Some(t), Some(p)) = (template, persona) {
-                    self.launch_selection = Some((t, p));
-                    self.should_quit = true;
+                    if t == "[Custom / ad-hoc]" {
+                        // Enter editor mode for custom / ad-hoc session
+                        self.editor_state = Some(
+                            crate::editor::EditorState::new_custom_adhoc(p)
+                        );
+                        self.mode = AppMode::Editor;
+                    } else {
+                        self.launch_selection = Some((t, p));
+                        self.should_quit = true;
+                    }
+                }
+            }
+            KeyCode::Char('e') => {
+                // Edit selected template in editor (not for "None" or "[Custom / ad-hoc]")
+                let template = self.templates.selected_item().map(str::to_owned);
+                if let Some(t) = template {
+                    if t != "None (no template)" && t != "[Custom / ad-hoc]" {
+                        self.editor_state = Some(
+                            crate::editor::EditorState::new_from_template(
+                                &t,
+                                crate::editor::EditorEntryPoint::EditTemplate,
+                            )
+                        );
+                        self.mode = AppMode::Editor;
+                    }
                 }
             }
             KeyCode::Char('?') => {
@@ -384,6 +417,14 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
 
     app.update_layout(area.width);
 
+    // Editor mode takes full screen
+    if matches!(app.mode, AppMode::Editor | AppMode::EditorSave) {
+        if let Some(editor) = app.editor_state.as_mut() {
+            crate::editor::render::render_editor(frame, editor, area);
+        }
+        return;
+    }
+
     // History overlay takes full screen
     if app.mode == AppMode::History {
         render_history(frame, app, area);
@@ -591,6 +632,57 @@ mod tests {
         // Either quit (if history exists on dev machine) or stay
         // Both are valid — just must not panic
         let _ = app.launch_selection;
+    }
+
+    #[test]
+    fn test_template_list_second_item_is_custom_adhoc() {
+        let app = App::new();
+        let second = app.templates.items.get(1).map(String::as_str);
+        assert_eq!(
+            second,
+            Some("[Custom / ad-hoc]"),
+            "second template entry must be '[Custom / ad-hoc]'"
+        );
+    }
+
+    #[test]
+    fn test_enter_on_custom_adhoc_enters_editor_mode() {
+        let mut app = App::new();
+        // Navigate to index 1 = "[Custom / ad-hoc]"
+        press(&mut app, KeyCode::Char('j'));
+        // Confirm it's actually selected
+        assert_eq!(
+            app.templates.selected_item(),
+            Some("[Custom / ad-hoc]"),
+            "after j, selected template must be '[Custom / ad-hoc]'"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.mode,
+            AppMode::Editor,
+            "Enter on [Custom / ad-hoc] must enter Editor mode"
+        );
+        assert!(
+            app.editor_state.is_some(),
+            "editor_state must be Some after entering Editor mode"
+        );
+    }
+
+    #[test]
+    fn test_e_key_on_none_does_nothing() {
+        let mut app = App::new();
+        // First item is "None (no template)" — e should not enter editor
+        assert_eq!(app.templates.selected_item(), Some("None (no template)"));
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(
+            app.mode,
+            AppMode::Normal,
+            "e on 'None (no template)' must not enter editor mode"
+        );
+        assert!(
+            app.editor_state.is_none(),
+            "editor_state must remain None when e is pressed on None"
+        );
     }
 }
 

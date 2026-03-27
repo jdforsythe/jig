@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, 'phase-*']
+  pull_request:
+    branches: [master, main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --workspace
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy
+        run: cargo clippy --workspace -- -D warnings
+
+  size-gate:
+    name: Headless Binary Size Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: headless
+      - name: Build headless binary
+        run: cargo build --profile release-headless --no-default-features -p jig-cli
+      - name: Check binary size < 5MB
+        run: |
+          SIZE=$(stat -c%s target/release-headless/jig)
+          echo "Headless binary size: ${SIZE} bytes ($(( SIZE / 1024 / 1024 ))MB)"
+          if [ "$SIZE" -ge 5242880 ]; then
+            echo "FAIL: Binary ${SIZE} bytes exceeds 5MB limit"
+            exit 1
+          fi
+          echo "PASS: Binary is under 5MB"

@@ -1,4 +1,5 @@
 pub mod app;
+pub mod editor;
 pub mod launch;
 pub mod theme;
 pub mod widgets;
