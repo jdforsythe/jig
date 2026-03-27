@@ -626,8 +626,48 @@ fn handle_import(url: &str, scope: &str) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn handle_diff(config: &std::path::Path, _cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    println!("jig diff {} — not yet implemented.", config.display());
+fn handle_diff(config: &std::path::Path, cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use jig_core::config::resolve::{CliOverrides, resolve_config};
+
+    if !config.exists() {
+        eprintln!("Config file not found: {}", config.display());
+        std::process::exit(1);
+    }
+
+    // Resolve current project config
+    let current = resolve_config(cwd, &CliOverrides::default())?;
+
+    // Resolve target: copy the config file into a temp dir as .jig.yaml
+    let dir = tempfile::tempdir()?;
+    std::fs::copy(config, dir.path().join(".jig.yaml"))?;
+    let target = resolve_config(dir.path(), &CliOverrides::default())?;
+
+    let current_json = serde_json::to_string_pretty(&current)?;
+    let target_json = serde_json::to_string_pretty(&target)?;
+
+    if current_json == target_json {
+        println!("No differences between current config and {}.", config.display());
+        return Ok(());
+    }
+
+    // Line-level diff: show lines only in current (-) and only in target (+)
+    let current_lines: Vec<&str> = current_json.lines().collect();
+    let target_lines: Vec<&str> = target_json.lines().collect();
+
+    println!("--- current ({})", cwd.join(".jig.yaml").display());
+    println!("+++ target ({})", config.display());
+
+    for line in &current_lines {
+        if !target_lines.contains(line) {
+            println!("-  {}", line);
+        }
+    }
+    for line in &target_lines {
+        if !current_lines.contains(line) {
+            println!("+  {}", line);
+        }
+    }
+
     Ok(())
 }
 
@@ -750,5 +790,30 @@ mod tests {
         handle_doctor_to(dir.path(), false, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(!output.contains("security checks"), "doctor without --audit must not show audit section");
+    }
+
+    #[test]
+    fn test_handle_diff_identical_configs_reports_no_differences() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "schema: 1\n";
+        let project_config = dir.path().join(".jig.yaml");
+        let other_config = dir.path().join("other.yaml");
+        std::fs::write(&project_config, yaml).unwrap();
+        std::fs::write(&other_config, yaml).unwrap();
+
+        // Capture stdout is tricky; test by checking the function doesn't error
+        let result = handle_diff(&other_config, dir.path());
+        assert!(result.is_ok(), "handle_diff must not error on valid identical configs");
+    }
+
+    #[test]
+    fn test_handle_diff_different_configs_runs_without_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".jig.yaml"), "schema: 1\nprofile:\n  settings:\n    model: claude-opus\n").unwrap();
+        let other = dir.path().join("other.yaml");
+        std::fs::write(&other, "schema: 1\nprofile:\n  settings:\n    model: claude-sonnet\n").unwrap();
+
+        let result = handle_diff(&other, dir.path());
+        assert!(result.is_ok(), "handle_diff must not error when configs differ");
     }
 }

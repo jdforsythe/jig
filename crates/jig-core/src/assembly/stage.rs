@@ -273,12 +273,31 @@ fn run_dry_run(
     if json {
         let system_prompt = super::prompt::compose_system_prompt(resolved, project_dir);
         let token_estimate = super::prompt::estimate_tokens(&system_prompt);
+
+        // Build MCP server list with credential-masked env values
+        let mcp_servers: serde_json::Value = resolved
+            .mcp_servers
+            .iter()
+            .map(|(name, server)| {
+                let mut val = serde_json::to_value(server).unwrap_or(serde_json::Value::Null);
+                if let Some(env_obj) = val.get_mut("env").and_then(|e| e.as_object_mut()) {
+                    for (k, v) in env_obj.iter_mut() {
+                        if is_credential_key(k) {
+                            *v = serde_json::Value::String("***".to_owned());
+                        }
+                    }
+                }
+                (name.clone(), val)
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+
         let output = serde_json::json!({
             "command": "claude",
             "args": claude_args,
             "system_prompt": system_prompt,
             "token_estimate": token_estimate,
-            "mcp_servers": resolved.mcp_servers.keys().collect::<Vec<_>>(),
+            "mcp_servers": mcp_servers,
             "hooks_to_run": resolved.pre_launch_hooks.iter()
                 .map(|(h, _)| h.display_command())
                 .collect::<Vec<_>>(),
@@ -302,6 +321,14 @@ fn run_dry_run(
     }
 
     Ok(0)
+}
+
+/// Returns true if the env var key looks like it contains a credential.
+fn is_credential_key(key: &str) -> bool {
+    let lower = key.to_lowercase();
+    lower.contains("key") || lower.contains("token") || lower.contains("secret")
+        || lower.contains("password") || lower.contains("credential") || lower.contains("api")
+        || lower.contains("auth") || lower.contains("passwd")
 }
 
 fn print_dry_run_hooks(hooks: &[(crate::config::schema::HookEntry, crate::config::schema::ConfigSource)]) {
@@ -374,6 +401,16 @@ mod tests {
     fn test_run_hook_exec_empty_is_ok() {
         let hook = HookEntry::Exec { exec: vec![] };
         assert!(run_hook(&hook).is_ok());
+    }
+
+    #[test]
+    fn test_is_credential_key_matches_sensitive_names() {
+        assert!(is_credential_key("API_KEY"), "API_KEY is a credential key");
+        assert!(is_credential_key("AUTH_TOKEN"), "AUTH_TOKEN is a credential key");
+        assert!(is_credential_key("DB_PASSWORD"), "DB_PASSWORD is a credential key");
+        assert!(is_credential_key("MY_SECRET"), "MY_SECRET is a credential key");
+        assert!(!is_credential_key("HOST"), "HOST is not a credential key");
+        assert!(!is_credential_key("PORT"), "PORT is not a credential key");
     }
 
     #[test]
