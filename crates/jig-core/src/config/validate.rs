@@ -27,9 +27,22 @@ pub enum ConfigError {
     HookShellRequired,
 }
 
+/// Minimum supported schema version.
+pub const MIN_SCHEMA_VERSION: u32 = 1;
+
 /// Validates per-layer constraints BEFORE merging.
 /// Must be called immediately after deserializing each config file.
 pub fn validate_layer(config: &JigConfig, source: ConfigSource) -> Result<(), ConfigError> {
+    // Schema version check
+    if let Some(version) = config.schema {
+        if version < MIN_SCHEMA_VERSION {
+            return Err(ConfigError::UnsupportedSchema {
+                found: version,
+                minimum: MIN_SCHEMA_VERSION,
+            });
+        }
+    }
+
     // persona.extends is only allowed in PersonalLocal
     if let Some(persona) = &config.persona {
         if persona.extends.is_some() && source != ConfigSource::PersonalLocal {
@@ -169,6 +182,19 @@ mod tests {
         let config = JigConfig::default();
         assert!(validate_layer(&config, ConfigSource::TeamProject).is_ok());
         assert!(validate_layer(&config, ConfigSource::GlobalUser).is_ok());
+    }
+
+    #[test]
+    fn test_validate_layer_accepts_current_schema_version() {
+        let config = JigConfig { schema: Some(1), ..Default::default() };
+        assert!(validate_layer(&config, ConfigSource::TeamProject).is_ok());
+    }
+
+    #[test]
+    fn test_validate_layer_rejects_schema_version_zero() {
+        let config = JigConfig { schema: Some(0), ..Default::default() };
+        let result = validate_layer(&config, ConfigSource::TeamProject);
+        assert!(matches!(result, Err(ConfigError::UnsupportedSchema { found: 0, .. })));
     }
 
     #[test]
