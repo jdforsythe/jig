@@ -55,6 +55,7 @@ struct SessionGuard {
     #[allow(dead_code)] // TempDir auto-cleans on Drop — it must be held alive
     temp_dir: Option<tempfile::TempDir>,
     mcp_written: bool,
+    lock_written: bool,
     session_suffix: String,
     canonical_cwd: PathBuf,
     exit_outcome: Option<ExitOutcome>,
@@ -74,6 +75,9 @@ impl Drop for SessionGuard {
                 // Never panic inside Drop
                 tracing::error!("MCP cleanup failed: {}", e);
             }
+        }
+        if self.lock_written {
+            super::lockfile::remove_lock(&self.canonical_cwd);
         }
         // temp_dir auto-cleans via TempDir::Drop when Some
 
@@ -109,6 +113,11 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
         } else {
             tracing::warn!("Running inside a git worktree. Config is scoped to this worktree.");
         }
+    }
+
+    // Step 1.6: Check for a concurrent jig instance in this directory
+    if let Some(warn) = super::lockfile::check_existing_lock(&canonical_cwd) {
+        tracing::warn!("{}", warn);
     }
 
     // Step 2: Resolve config (all four layers)
@@ -153,6 +162,9 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
         return run_dry_run(&resolved, &opts.project_dir, &canonical_cwd, opts.json);
     }
 
+    // Write lock file so concurrent jig instances can detect this session
+    super::lockfile::write_lock(&canonical_cwd, pid, &session_id);
+
     // Step 8: Stage temp dir
     let temp_dir = create_temp_dir()?;
     let temp_path = temp_dir.path().to_owned();
@@ -170,6 +182,7 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
     let mut guard = SessionGuard {
         temp_dir: Some(temp_dir),
         mcp_written: mcp_result.is_some(),
+        lock_written: true,
         session_suffix: mcp_result
             .as_ref()
             .map(|r| r.session_suffix.clone())

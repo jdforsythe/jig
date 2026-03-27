@@ -4,7 +4,8 @@
 
 **Date:** 2026-03-26
 **Supersedes:** jig-prd-v1.0.0.md
-**Status:** Phase 1 Complete — Phase 2 In Progress
+**Superseded by:** jig-prd-v1.2.0.md
+**Status:** Phase 1 Complete — Phase 2 Mostly Complete (P0/P2/P3 done; P1 Editor Mode deferred; P4 infra items deferred)
 
 ---
 
@@ -64,81 +65,81 @@
 
 **Not completed — moved to Phase 2:**
 
-- [ ] Config precedence fix: explicit CLI flags must rank above template defaults
-- [ ] Hook execution (`exec[]` and `shell: true` dispatch at runtime)
-- [ ] `${VAR}` / `${VAR:-default}` expansion at MCP assembly time
+- [x] Config precedence fix: explicit CLI flags must rank above template defaults
+- [x] Hook execution (`exec[]` and `shell: true` dispatch at runtime)
+- [x] `${VAR}` / `${VAR:-default}` expansion at MCP assembly time
 - [ ] `from_source` skill resolution (named sources → actual paths)
 - [ ] Plugin processing (`--plugin-dir`, `installed_plugins.json` lookup)
-- [ ] `extends` array DFS resolution + cycle detection (schema validates, resolver doesn't walk yet)
-- [ ] `persona.extends` enforcement (only in `.jig.local.yaml`)
-- [ ] MCP first-run approval (reuse hook approval pattern)
-- [ ] `jig config set/add/remove` (dotted path, `--scope`)
-- [ ] `jig --last [-p P]`, `jig --session <UUID>`, `jig --resume`
-- [ ] `jig history [--json] [--limit N]`
-- [ ] `--dry-run --json` (currently outputs text, not JSON)
-- [ ] `jig init` interactive wizard (role-first, project detection, template suggestion)
-- [ ] `jig import [--dry-run]` (reverse-engineer existing claude config)
-- [ ] `jig diff <config>` (compare two resolved configs)
+- [x] `extends` array DFS resolution + cycle detection (schema validates, resolver doesn't walk yet)
+- [x] `persona.extends` enforcement (only in `.jig.local.yaml`)
+- [x] MCP first-run approval (reuse hook approval pattern)
+- [x] `jig config set/add/remove` (dotted path, `--scope`)
+- [x] `jig --last [-p P]`, `jig --session <UUID>`, `jig --resume`
+- [x] `jig history [--json] [--limit N]`
+- [x] `--dry-run --json` (currently outputs text, not JSON)
+- [x] `jig init` interactive wizard (role-first, project detection, template suggestion)
+- [x] `jig import [--dry-run]` (reverse-engineer existing claude config)
+- [x] `jig diff <config>` (compare two resolved configs)
 - [ ] Schema migration (v1→v2 chained with timestamped backup)
-- [ ] `jig doctor --audit` (full config validation, security checks)
-- [ ] Global config ownership check (0600/0640)
-- [ ] Credential masking in history and dry-run output
-- [ ] Worktree detection + concurrency warnings
+- [x] `jig doctor --audit` (full config validation, security checks)
+- [x] Global config ownership check (0600/0640)
+- [x] Credential masking in history and dry-run output
+- [x] Worktree detection + concurrency warnings
 - [ ] CI: GitHub Releases (macOS/Linux x86/arm), headless binary size gate
 - [ ] Homebrew tap + curl installer + `cargo binstall` support
-- [ ] Project `.jig.lock` + global `~/.config/jig/jig.lock` lock files
+- [x] Project `.jig.lock` lock file (global `~/.config/jig/jig.lock` deferred)
 
 ---
 
-## Phase 2 — TUI + Hooks + Core Completion [IN PROGRESS]
+## Phase 2 — TUI + Hooks + Core Completion [MOSTLY COMPLETE]
 
 ### P0 — Critical (complete what Phase 1 started)
 
-- [ ] **Config precedence fix** — add `ConfigSource::ExplicitCliFlag` ranked above `ConfigSource::TemplateSelected` in `config/resolve.rs`. Apply template config first in `apply_cli_overrides()`, then apply individual CLI flag scalars afterward. Additive fields (tools, skills) remain union regardless. Regression test: `jig -t code-review --model claude-opus` uses `claude-opus`.
+- [x] **Config precedence fix** — add `ConfigSource::ExplicitCliFlag` ranked above `ConfigSource::TemplateSelected` in `config/resolve.rs`. Apply template config first in `apply_cli_overrides()`, then apply individual CLI flag scalars afterward. Additive fields (tools, skills) remain union regardless. Regression test: `jig -t code-review --model claude-opus` uses `claude-opus`.
 
-- [ ] **Hook execution** — in `stage.rs:108`, implement the `TODO`. Dispatch `HookEntry::Exec { exec }` via `Command::new(&exec[0]).args(&exec[1..])`. Dispatch `HookEntry::Shell { command, shell: true }` via `sh -c`. `command` without `shell: true` → error. Run approval check before execution. `pre_launch` hooks run before fork; `post_exit` hooks run in `SessionGuard::drop()`. `--dry-run` already prints hooks, no change needed.
+- [x] **Hook execution** — in `stage.rs:108`, implement the `TODO`. Dispatch `HookEntry::Exec { exec }` via `Command::new(&exec[0]).args(&exec[1..])`. Dispatch `HookEntry::Shell { command, shell: true }` via `sh -c`. `command` without `shell: true` → error. Run approval check before execution. `pre_launch` hooks run before fork; `post_exit` hooks run in `SessionGuard::drop()`. `--dry-run` already prints hooks, no change needed.
 
-- [ ] **Env var expansion in MCP** — at assembly time in `write_atomic()`, expand `${VAR}` and `${VAR:-default}` in `McpServer` field values. Error if var is unset with no default. Use pre-expansion strings in approval cache hashes.
+- [x] **Env var expansion in MCP** — at assembly time in `write_atomic()`, expand `${VAR}` and `${VAR:-default}` in `McpServer` field values. Error if var is unset with no default. Use pre-expansion strings in approval cache hashes.
 
 ### P1 — TUI Improvements
 
-- [ ] **"None" option for template and persona** — add `None (no template)` at top of template list and `None (no persona)` at top of persona list. Launching with no template skips template config overlay. Launching with no persona omits `--append-system-prompt-file` entirely.
+- [x] **"None" option for template and persona** — add `None (no template)` at top of template list and `None (no persona)` at top of persona list. Launching with no template skips template config overlay. Launching with no persona omits `--append-system-prompt-file` entirely.
 
 - [ ] **"Custom / Ad-hoc" entry in template list** — add `[Custom / ad-hoc]` entry below None. Pressing Enter on it opens Editor Mode inline instead of launching. Editor Mode fields: allowed/disallowed tools, persona, MCP servers, skills, hooks, model, context fragments. Actions: `[Launch]` (one-off, no save) and `[Save as template]`. **This is the same Editor Mode screen used by `jig template new|edit`** — no separate screen should be created.
 
 - [ ] **Editor Mode** — section-based TUI editing (skills, plugins, MCP, permissions, persona, context, hooks, flags). Undo stack (Ctrl-Z). Scope selection (global/project) when saving. Live preview of composed output. Accessible via `e` on selected template/persona, the Custom ad-hoc entry, and `jig template new`. Vim keybindings + which-key popup.
 
-- [ ] **`jig init` interactive wizard** — replace the stub. Ask: what kind of project? (detect language/framework from file extensions). Suggest matching built-in template. Ask: which persona? Scaffold `.jig.yaml` with template + persona + commented examples for MCP/skills/hooks. Mention `.jig.local.yaml` for personal overrides. Total: < 30s for typical project.
+- [x] **`jig init` interactive wizard** — replace the stub. Ask: what kind of project? (detect language/framework from file extensions). Suggest matching built-in template. Ask: which persona? Scaffold `.jig.yaml` with template + persona + commented examples for MCP/skills/hooks. Mention `.jig.local.yaml` for personal overrides. Total: < 30s for typical project.
 
 ### P2 — Session Management
 
-- [ ] **`jig history [--json] [--limit N]`** — display session history from `history.jsonl`. Records: template, persona, directory, duration, exit code. JSON output with `--json`.
-- [ ] **`jig --last [-p P]`** — relaunch last session, optionally override persona.
-- [ ] **`jig --resume` / `jig --session <UUID>`** — re-stage config and resume prior session by UUID.
-- [ ] **Session history view in TUI** — `h` key opens session history, `L` relaunches last.
-- [ ] **`--dry-run --json` fix** — output valid JSON: `{ command, args, system_prompt, token_estimate, mcp_servers, hooks_to_run }`.
+- [x] **`jig history [--json] [--limit N]`** — display session history from `history.jsonl`. Records: template, persona, directory, duration, exit code. JSON output with `--json`.
+- [x] **`jig --last [-p P]`** — relaunch last session, optionally override persona.
+- [x] **`jig --resume` / `jig --session <UUID>`** — re-stage config and resume prior session by UUID.
+- [x] **Session history view in TUI** — `h` key opens session history, `L` relaunches last.
+- [x] **`--dry-run --json` fix** — output valid JSON: `{ command, args, system_prompt, token_estimate, mcp_servers, hooks_to_run }`.
 
 ### P3 — Config Management CLI
 
-- [ ] **`jig config set/add/remove`** — dotted path notation (`jig config set persona.name strict-security`), `--scope global|project|local`, atomic YAML write.
-- [ ] **`jig import [--dry-run]`** — reverse-engineer `~/.claude.json` project config into `.jig.yaml`, detect credentials, suggest `.jig.local.yaml` split, prompt hook approval.
-- [ ] **`jig diff <config>`** — compare two resolved configs as unified diff or structured JSON.
+- [x] **`jig config set/add/remove`** — dotted path notation (`jig config set persona.name strict-security`), `--scope global|project|local`, atomic YAML write.
+- [x] **`jig import [--dry-run]`** — reverse-engineer `~/.claude.json` project config into `.jig.yaml`, detect credentials, suggest `.jig.local.yaml` split, prompt hook approval.
+- [x] **`jig diff <config>`** — compare two resolved configs as unified diff or structured JSON.
 
 ### P4 — Security + Infrastructure
 
 - [ ] `from_source` skill resolution (named sources → git URLs or local paths)
 - [ ] Plugin processing (`--plugin-dir`, `installed_plugins.json` lookup, install prompt)
-- [ ] `extends` array DFS resolution + cycle detection in config layer walking
-- [ ] `persona.extends` enforcement (only `.jig.local.yaml`)
-- [ ] Global config ownership check (0600/0640 enforcement)
-- [ ] Credential masking in history and dry-run output
-- [ ] Worktree detection + concurrency warnings
-- [ ] Schema migration (v1→v2 with confirmation + timestamped backup)
-- [ ] `jig doctor --audit` (full validation pass)
-- [ ] MCP first-run approval (reuse hook approval pattern)
+- [x] `extends` array DFS resolution + cycle detection in config layer walking
+- [x] `persona.extends` enforcement (only `.jig.local.yaml`)
+- [x] Global config ownership check (0600/0640 enforcement, via `jig doctor --audit`)
+- [x] Credential masking in history and dry-run output (dry-run JSON masks env vars; history stores server names only, no credentials)
+- [x] Worktree detection + concurrency warnings (worktree.rs + project `.jig.lock`)
+- [ ] Schema migration (v1→v2 with confirmation + timestamped backup) — placeholder only
+- [x] `jig doctor --audit` (full validation pass)
+- [x] MCP first-run approval (reuse hook approval pattern)
 - [ ] CI/CD: GitHub Releases binaries (macOS/Linux x86/arm64), headless size gate (< 5 MB)
 - [ ] Homebrew tap + curl installer + `cargo binstall` support
-- [ ] Lock files: project `.jig.lock` + global `~/.config/jig/jig.lock`
+- [x] Project `.jig.lock` lock file; global `~/.config/jig/jig.lock` deferred to Phase 3
 
 ---
 
