@@ -140,14 +140,60 @@ pub struct SkillArgs {
 #[derive(Subcommand, Debug)]
 pub enum SkillSubcommand {
     /// List installed skills
-    List,
+    List {
+        /// Filter by source name
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Search skills by keyword or tag
+    Search {
+        /// Search query (name, description, or tag substring)
+        query: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show skill metadata and integrity status
+    Info {
+        /// Source name
+        source: String,
+        /// Skill name
+        skill: String,
+    },
+    /// Create a local override copy of a skill
+    Override {
+        /// Source name
+        source: String,
+        /// Skill name
+        skill: String,
+    },
+    /// Show diff between local override and upstream skill
+    Diff {
+        /// Source name
+        source: String,
+        /// Skill name
+        skill: String,
+    },
+    /// Reset a skill to its upstream version (remove local override)
+    Reset {
+        /// Source name
+        source: String,
+        /// Skill name
+        skill: String,
+        /// Skip confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 #[derive(Args, Debug)]
 pub struct SyncArgs {
-    /// Only fail if sources are out of date (for CI)
+    /// Refuse to update if any source is out of date (CI mode)
     #[arg(long)]
     pub frozen: bool,
+    /// Report staleness without pulling
+    #[arg(long)]
+    pub check: bool,
 }
 
 #[derive(Args, Debug)]

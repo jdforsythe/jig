@@ -78,6 +78,9 @@ tempfile = "3"
 # Snapshot testing
 insta = { version = "1", features = ["yaml"] }
 
+# TOML serialization
+toml = "0.8"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -75,6 +75,7 @@ impl EditorDraft {
                 settings,
                 env: None,
                 plugins: None,
+                sources: None,
             })
         };
 

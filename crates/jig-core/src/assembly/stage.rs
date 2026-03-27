@@ -175,8 +175,28 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
     let temp_dir = create_temp_dir()?;
     let temp_path = temp_dir.path().to_owned();
 
-    // Step 9: Symlink skills into temp dir
+    // Step 9a: Symlink local skills into temp dir (jail: project_dir)
     stage_local_skills(&temp_path, &resolved.local_skills, &opts.project_dir)?;
+
+    // Step 9b: Resolve from_source skills and symlink them (jail: ~/.config/jig)
+    if !resolved.skills.is_empty() {
+        match super::source_resolver::resolve_from_source_skills(&resolved.skills) {
+            Ok(source_paths) if !source_paths.is_empty() => {
+                let jig_config_root = home::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("/tmp"))
+                    .join(".config")
+                    .join("jig");
+                if let Err(e) = stage_local_skills(&temp_path, &source_paths, &jig_config_root) {
+                    tracing::warn!("Failed to stage source skills: {e}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                // Not fatal — warn and continue without source skills
+                tracing::warn!("Skill source resolution: {e}");
+            }
+        }
+    }
 
     // Step 10: Write MCP to ~/.claude.json (atomic, flock, conflict-detect, refcount)
     let mcp_result = if !resolved.mcp_servers.is_empty() {
