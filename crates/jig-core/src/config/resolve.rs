@@ -103,14 +103,23 @@ pub fn resolve_config(
     project_dir: &Path,
     cli_overrides: &CliOverrides,
 ) -> Result<ResolvedConfig, ConfigError> {
-    // Load all four layers in parallel (read files concurrently via threads)
     let global_path = global_config_path().unwrap_or_else(|| PathBuf::from("/dev/null"));
+    resolve_config_with_global_path(project_dir, cli_overrides, &global_path)
+}
+
+/// Inner implementation that accepts an explicit global config path.
+/// Used by tests to inject a temp global config without touching the real one.
+fn resolve_config_with_global_path(
+    project_dir: &Path,
+    cli_overrides: &CliOverrides,
+    global_path: &Path,
+) -> Result<ResolvedConfig, ConfigError> {
     let project_path = project_dir.join(".jig.yaml");
     let local_path = project_dir.join(".jig.local.yaml");
 
     // Parallel reads
     let (global_result, project_result, local_result) = std::thread::scope(|s| {
-        let global = s.spawn(|| load_config_file(&global_path));
+        let global = s.spawn(|| load_config_file(global_path));
         let project = s.spawn(|| load_config_file(&project_path));
         let local = s.spawn(|| load_config_file(&local_path));
         (global.join().unwrap_or(None), project.join().unwrap_or(None), local.join().unwrap_or(None))
@@ -558,5 +567,115 @@ profile:
             "CLI -p flag should load built-in rules, got: {:?}",
             resolved.rules
         );
+    }
+
+    // ─── Task 0.1: Five-layer config precedence tests ───────────────────────────
+
+    /// Helper: write a YAML config file to path.
+    fn write_yaml(path: &std::path::Path, yaml: &str) {
+        std::fs::write(path, yaml).unwrap();
+    }
+
+    #[test]
+    fn test_five_layer_precedence_scalar() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_cfg = global_dir.path().join("config.yaml");
+
+        // Layer 1 (lowest): global
+        write_yaml(&global_cfg, "schema: 1\nprofile:\n  settings:\n    model: from-global\n");
+        // Layer 2: project
+        write_yaml(
+            &dir.path().join(".jig.yaml"),
+            "schema: 1\nprofile:\n  settings:\n    model: from-project\n",
+        );
+        // Layer 3: local
+        write_yaml(
+            &dir.path().join(".jig.local.yaml"),
+            "schema: 1\nprofile:\n  settings:\n    model: from-local\n",
+        );
+        // Layer 4 (highest): CLI
+        let cli = CliOverrides { model: Some("from-cli".to_owned()), ..Default::default() };
+
+        let resolved = resolve_config_with_global_path(dir.path(), &cli, &global_cfg).unwrap();
+        assert_eq!(resolved.model.as_deref(), Some("from-cli"), "CLI must win");
+
+        // Drop CLI → local wins
+        let no_cli = CliOverrides::default();
+        let resolved = resolve_config_with_global_path(dir.path(), &no_cli, &global_cfg).unwrap();
+        assert_eq!(resolved.model.as_deref(), Some("from-local"), "local must beat project and global");
+
+        // Drop local → project wins
+        std::fs::remove_file(dir.path().join(".jig.local.yaml")).unwrap();
+        let resolved = resolve_config_with_global_path(dir.path(), &no_cli, &global_cfg).unwrap();
+        assert_eq!(resolved.model.as_deref(), Some("from-project"), "project must beat global");
+
+        // Drop project → global wins
+        std::fs::remove_file(dir.path().join(".jig.yaml")).unwrap();
+        let resolved = resolve_config_with_global_path(dir.path(), &no_cli, &global_cfg).unwrap();
+        assert_eq!(resolved.model.as_deref(), Some("from-global"), "global must be the floor");
+    }
+
+    #[test]
+    fn test_mcp_servers_union_across_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_cfg = global_dir.path().join("config.yaml");
+
+        write_yaml(
+            &global_cfg,
+            "schema: 1\nprofile:\n  mcp:\n    server_a:\n      type: stdio\n      command: cmd_a\n",
+        );
+        write_yaml(
+            &dir.path().join(".jig.yaml"),
+            "schema: 1\nprofile:\n  mcp:\n    server_b:\n      type: stdio\n      command: cmd_b\n",
+        );
+
+        let resolved = resolve_config_with_global_path(dir.path(), &CliOverrides::default(), &global_cfg).unwrap();
+        assert!(resolved.mcp_servers.contains_key("server_a"), "global MCP server must be present");
+        assert!(resolved.mcp_servers.contains_key("server_b"), "project MCP server must be present");
+    }
+
+    #[test]
+    fn test_skills_union_across_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_cfg = global_dir.path().join("config.yaml");
+
+        write_yaml(
+            &global_cfg,
+            "schema: 1\nprofile:\n  skills:\n    local:\n      - ./skill_a\n",
+        );
+        write_yaml(
+            &dir.path().join(".jig.yaml"),
+            "schema: 1\nprofile:\n  skills:\n    local:\n      - ./skill_b\n",
+        );
+
+        let resolved = resolve_config_with_global_path(dir.path(), &CliOverrides::default(), &global_cfg).unwrap();
+        let skill_strs: Vec<String> = resolved.local_skills.iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(skill_strs.iter().any(|s| s.contains("skill_a")), "global skill must be in union");
+        assert!(skill_strs.iter().any(|s| s.contains("skill_b")), "project skill must be in union");
+    }
+
+    #[test]
+    fn test_env_per_key_last_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_cfg = global_dir.path().join("config.yaml");
+
+        write_yaml(
+            &global_cfg,
+            "schema: 1\nprofile:\n  env:\n    FOO: global\n    BAR: global\n",
+        );
+        write_yaml(
+            &dir.path().join(".jig.yaml"),
+            "schema: 1\nprofile:\n  env:\n    FOO: project\n",
+        );
+
+        let resolved = resolve_config_with_global_path(dir.path(), &CliOverrides::default(), &global_cfg).unwrap();
+        assert_eq!(resolved.env.get("FOO").map(String::as_str), Some("project"), "project FOO must override global");
+        assert_eq!(resolved.env.get("BAR").map(String::as_str), Some("global"), "BAR only in global must survive");
     }
 }

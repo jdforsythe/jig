@@ -42,13 +42,18 @@ pub fn lock_file_path() -> PathBuf {
 
 /// Returns the refcount file path for the given canonical CWD.
 pub fn refcount_path(canonical_cwd: &Path) -> PathBuf {
-    let cwd_hash = sha256_hex(canonical_cwd.to_string_lossy().as_bytes());
-    home::home_dir()
+    let state_dir = home::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".config")
         .join("jig")
-        .join("state")
-        .join(format!("{cwd_hash}.refcount"))
+        .join("state");
+    refcount_path_in(canonical_cwd, &state_dir)
+}
+
+/// Computes the refcount file path within an explicit state directory.
+pub(crate) fn refcount_path_in(canonical_cwd: &Path, state_dir: &Path) -> PathBuf {
+    let cwd_hash = sha256_hex(canonical_cwd.to_string_lossy().as_bytes());
+    state_dir.join(format!("{cwd_hash}.refcount"))
 }
 
 fn sha256_hex(data: &[u8]) -> String {
@@ -128,33 +133,46 @@ pub fn write_atomic(
 ) -> Result<McpWriteResult, McpError> {
     let claude_path = claude_json_path();
     let lock_path = lock_file_path();
-    let refcount_path = refcount_path(canonical_cwd);
+    let state_dir = home::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".config").join("jig").join("state");
+    write_atomic_inner(new_servers, canonical_cwd, pid, &claude_path, &lock_path, &state_dir)
+}
+
+/// Inner implementation with explicit paths — used by tests to inject temp dirs.
+pub(crate) fn write_atomic_inner(
+    new_servers: &HashMap<String, McpServer>,
+    canonical_cwd: &Path,
+    pid: u32,
+    claude_path: &Path,
+    lock_path: &Path,
+    state_dir: &Path,
+) -> Result<McpWriteResult, McpError> {
+    let refcount_path = refcount_path_in(canonical_cwd, state_dir);
 
     // Ensure state directory exists
-    if let Some(parent) = refcount_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
+    let _ = std::fs::create_dir_all(state_dir);
 
     // Acquire exclusive lock on the dedicated lock file
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
-        .open(&lock_path)
+        .open(lock_path)
         .map_err(|e| McpError::LockError {
-            path: lock_path.clone(),
+            path: lock_path.to_owned(),
             source: e,
         })?;
 
     let mut lock_guard = fd_lock::RwLock::new(lock_file);
     let _write_guard = lock_guard.write().map_err(|e| McpError::LockError {
-        path: lock_path.clone(),
+        path: lock_path.to_owned(),
         source: e,
     })?;
 
-    // Read current ~/.claude.json as raw Value
+    // Read current claude.json as raw Value
     let mut root: Value = if claude_path.exists() {
-        let contents = std::fs::read_to_string(&claude_path)?;
+        let contents = std::fs::read_to_string(claude_path)?;
         if contents.trim().is_empty() {
             Value::Object(Default::default())
         } else {
@@ -208,11 +226,11 @@ pub fn write_atomic(
         mcp_obj.insert(effective_name, server_value);
     }
 
-    // Backup ~/.claude.json atomically before mutation
+    // Backup atomically before mutation
     if claude_path.exists() {
         let backup_path = claude_path.with_extension(format!("jig-backup-{pid}"));
         let backup_tmp = claude_path.with_extension(format!("jig-backup-{pid}.tmp"));
-        let backup_contents = std::fs::read_to_string(&claude_path)?;
+        let backup_contents = std::fs::read_to_string(claude_path)?;
         std::fs::write(&backup_tmp, &backup_contents)?;
         std::fs::rename(&backup_tmp, &backup_path)?;
     }
@@ -247,7 +265,7 @@ pub fn write_atomic(
         f.sync_data()?;
     }
 
-    std::fs::rename(&tmp_path, &claude_path)?;
+    std::fs::rename(&tmp_path, claude_path)?;
 
     // Increment refcount (MUST be inside flock)
     increment_refcount(&refcount_path, &session_suffix, canonical_cwd, pid)?;
@@ -293,21 +311,35 @@ pub fn cleanup_entries(
 ) -> Result<(), McpError> {
     let claude_path = claude_json_path();
     let lock_path = lock_file_path();
-    let refcount_path = refcount_path(canonical_cwd);
+    let state_dir = home::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".config").join("jig").join("state");
+    cleanup_entries_inner(canonical_cwd, session_suffix, &claude_path, &lock_path, &state_dir)
+}
+
+/// Inner implementation with explicit paths — used by tests to inject temp dirs.
+pub(crate) fn cleanup_entries_inner(
+    canonical_cwd: &Path,
+    session_suffix: &str,
+    claude_path: &Path,
+    lock_path: &Path,
+    state_dir: &Path,
+) -> Result<(), McpError> {
+    let refcount_path = refcount_path_in(canonical_cwd, state_dir);
 
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
-        .open(&lock_path)
+        .open(lock_path)
         .map_err(|e| McpError::LockError {
-            path: lock_path.clone(),
+            path: lock_path.to_owned(),
             source: e,
         })?;
 
     let mut lock_guard = fd_lock::RwLock::new(lock_file);
     let _write_guard = lock_guard.write().map_err(|e| McpError::LockError {
-        path: lock_path.clone(),
+        path: lock_path.to_owned(),
         source: e,
     })?;
 
@@ -317,11 +349,6 @@ pub fn cleanup_entries(
 
     if new_count > 0 {
         // Other sessions still running — update count, skip MCP removal
-        let content = std::fs::read_to_string(&refcount_path).unwrap_or_default();
-        let mut lines: Vec<&str> = content.lines().collect();
-        if !lines.is_empty() {
-            lines[0] = ""; // placeholder, will be replaced
-        }
         let new_content = format!("{new_count}\n");
         std::fs::write(&refcount_path, new_content)?;
         debug!("Refcount decremented to {new_count}, skipping MCP cleanup");
@@ -330,7 +357,7 @@ pub fn cleanup_entries(
 
     // Count is zero — remove our MCP entries
     if claude_path.exists() {
-        let contents = std::fs::read_to_string(&claude_path)?;
+        let contents = std::fs::read_to_string(claude_path)?;
         if let Ok(mut root) = serde_json::from_str::<Value>(&contents) {
             let cwd_key = canonical_cwd.to_string_lossy().into_owned();
 
@@ -350,7 +377,7 @@ pub fn cleanup_entries(
             let json_str = serde_json::to_string_pretty(&root)?;
             let tmp_path = claude_path.with_extension("jig-cleanup.tmp");
             std::fs::write(&tmp_path, json_str.as_bytes())?;
-            std::fs::rename(&tmp_path, &claude_path)?;
+            std::fs::rename(&tmp_path, claude_path)?;
             info!("MCP cleanup complete: removed entries with suffix {session_suffix}");
         }
     }
@@ -452,6 +479,145 @@ mod tests {
             .and_then(|p| p.get(cwd_key))
             .and_then(|c| c.get("mcpServers"));
         assert!(servers.is_some(), "direct .get() navigation must find the mcpServers entry");
+    }
+
+    // ─── Task 0.4: write_atomic end-to-end tests ───────────────────────────────
+
+    fn temp_mcp_env() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let claude_json = dir.path().join(".claude.json");
+        let lock_path = dir.path().join(".lock");
+        let state_dir = dir.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        (dir, claude_json, lock_path, state_dir)
+    }
+
+    #[test]
+    fn test_write_atomic_injects_servers_into_claude_json() {
+        let (_dir, claude_path, lock_path, state_dir) = temp_mcp_env();
+        let cwd = tempfile::tempdir().unwrap();
+        let canonical_cwd = cwd.path().to_owned();
+
+        let mut servers = HashMap::new();
+        servers.insert("test-server".to_owned(), dummy_server());
+
+        let result = write_atomic_inner(&servers, &canonical_cwd, 9999, &claude_path, &lock_path, &state_dir).unwrap();
+
+        let contents = std::fs::read_to_string(&claude_path).unwrap();
+        let root: Value = serde_json::from_str(&contents).unwrap();
+        let cwd_key = canonical_cwd.to_string_lossy().into_owned();
+
+        let mcp_servers = root
+            .get("projects")
+            .and_then(|p| p.get(&cwd_key))
+            .and_then(|c| c.get("mcpServers"))
+            .expect("mcpServers must be injected");
+
+        let suffixed_name = format!("test-server__{}", result.session_suffix);
+        assert!(mcp_servers.get(&suffixed_name).is_some(), "server must appear under suffixed name");
+    }
+
+    #[test]
+    fn test_write_atomic_with_conflict_uses_suffix() {
+        let (_dir, claude_path, lock_path, state_dir) = temp_mcp_env();
+        let cwd = tempfile::tempdir().unwrap();
+        let canonical_cwd = cwd.path().to_owned();
+
+        // Pre-populate claude.json with an existing server_a
+        let existing = serde_json::json!({
+            "projects": {
+                canonical_cwd.to_string_lossy().as_ref(): {
+                    "mcpServers": {
+                        "server_a": { "type": "stdio", "command": "old" }
+                    }
+                }
+            }
+        });
+        std::fs::write(&claude_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+
+        let mut servers = HashMap::new();
+        servers.insert("server_a".to_owned(), dummy_server());
+
+        let result = write_atomic_inner(&servers, &canonical_cwd, 9998, &claude_path, &lock_path, &state_dir).unwrap();
+
+        let contents = std::fs::read_to_string(&claude_path).unwrap();
+        let root: Value = serde_json::from_str(&contents).unwrap();
+        let cwd_key = canonical_cwd.to_string_lossy().into_owned();
+        let mcp_servers = root["projects"][&cwd_key]["mcpServers"].as_object().unwrap();
+
+        // Original entry preserved
+        assert!(mcp_servers.contains_key("server_a"), "pre-existing server_a must be preserved");
+        // New entry written under suffixed name
+        let suffixed = format!("server_a__{}", result.session_suffix);
+        assert!(mcp_servers.contains_key(&suffixed), "new server_a must use suffixed name: {suffixed}");
+    }
+
+    #[test]
+    fn test_cleanup_entries_removes_only_suffixed() {
+        let (_dir, claude_path, lock_path, state_dir) = temp_mcp_env();
+        let cwd = tempfile::tempdir().unwrap();
+        let canonical_cwd = cwd.path().to_owned();
+        let suffix = "jig_testabcd";
+
+        // Set up claude.json with one suffixed entry and one plain entry
+        let cwd_key = canonical_cwd.to_string_lossy().into_owned();
+        let existing = serde_json::json!({
+            "projects": {
+                &cwd_key: {
+                    "mcpServers": {
+                        format!("my-server__{suffix}"): { "type": "stdio", "command": "x" },
+                        "preexisting": { "type": "stdio", "command": "y" }
+                    }
+                }
+            }
+        });
+        std::fs::write(&claude_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+
+        // Write refcount = 1 (simulates a single active session)
+        let ref_path = refcount_path_in(&canonical_cwd, &state_dir);
+        std::fs::write(&ref_path, format!("1\n{suffix}\n{cwd_key}\n1\n")).unwrap();
+
+        cleanup_entries_inner(&canonical_cwd, suffix, &claude_path, &lock_path, &state_dir).unwrap();
+
+        let contents = std::fs::read_to_string(&claude_path).unwrap();
+        let root: Value = serde_json::from_str(&contents).unwrap();
+        let mcp_servers = root["projects"][&cwd_key]["mcpServers"].as_object().unwrap();
+
+        assert!(!mcp_servers.contains_key(&format!("my-server__{suffix}")), "suffixed entry must be removed");
+        assert!(mcp_servers.contains_key("preexisting"), "pre-existing entry must survive");
+    }
+
+    #[test]
+    fn test_refcount_increments_and_decrements() {
+        let (_dir, claude_path, lock_path, state_dir) = temp_mcp_env();
+        let cwd = tempfile::tempdir().unwrap();
+        let canonical_cwd = cwd.path().to_owned();
+
+        let mut servers = HashMap::new();
+        servers.insert("svc".to_owned(), dummy_server());
+
+        // Session 1: refcount 0 → 1
+        let r1 = write_atomic_inner(&servers, &canonical_cwd, 1001, &claude_path, &lock_path, &state_dir).unwrap();
+        let ref_path = refcount_path_in(&canonical_cwd, &state_dir);
+        let count1 = read_refcount(&ref_path);
+        assert_eq!(count1, 1, "after first write refcount must be 1");
+
+        // Session 2: refcount 1 → 2
+        write_atomic_inner(&servers, &canonical_cwd, 1002, &claude_path, &lock_path, &state_dir).unwrap();
+        let count2 = read_refcount(&ref_path);
+        assert_eq!(count2, 2, "after second write refcount must be 2");
+
+        // Cleanup session 1: refcount 2 → 1 (entries NOT removed since > 0)
+        cleanup_entries_inner(&canonical_cwd, &r1.session_suffix, &claude_path, &lock_path, &state_dir).unwrap();
+        let count3 = read_refcount(&ref_path);
+        assert_eq!(count3, 1, "after first cleanup refcount must be 1");
+
+        // MCP entries must still exist (refcount > 0 means another session is live)
+        let contents = std::fs::read_to_string(&claude_path).unwrap();
+        let root: Value = serde_json::from_str(&contents).unwrap();
+        let cwd_key = canonical_cwd.to_string_lossy().into_owned();
+        let mcp_servers = root["projects"][&cwd_key]["mcpServers"].as_object().unwrap();
+        assert!(!mcp_servers.is_empty(), "MCP entries must not be removed while refcount > 0");
     }
 
     #[test]

@@ -23,7 +23,7 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 scopeguard = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 libc = "0.2"
 
 [dependencies.ureq]

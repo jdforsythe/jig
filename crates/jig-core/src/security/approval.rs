@@ -41,7 +41,18 @@ pub fn run_hook_approvals(
     ui: &dyn ApprovalUi,
     yes: bool,
 ) -> Result<(), HookDeniedError> {
-    let approval_cache = load_approval_cache();
+    run_hook_approvals_inner(hooks, ui, yes, &approval_cache_path())
+}
+
+/// Inner implementation that accepts an explicit cache path.
+/// Used by tests to inject a temp cache file without touching the real one.
+fn run_hook_approvals_inner(
+    hooks: &[(HookEntry, ConfigSource)],
+    ui: &dyn ApprovalUi,
+    yes: bool,
+    cache_path: &std::path::Path,
+) -> Result<(), HookDeniedError> {
+    let approval_cache = load_approval_cache_from(cache_path);
 
     for (hook, source) in hooks {
         let command = hook.display_command().to_owned();
@@ -83,7 +94,7 @@ pub fn run_hook_approvals(
 
         match ui.prompt_approval(&req) {
             ApprovalDecision::Approved | ApprovalDecision::ApproveSession => {
-                append_approval_cache(&hash, &command, source);
+                append_approval_cache_to(cache_path, &hash, &command, source);
             }
             ApprovalDecision::Denied => {
                 return Err(HookDeniedError {
@@ -122,9 +133,8 @@ fn approval_cache_path() -> PathBuf {
         .join("hook-approvals.jsonl")
 }
 
-fn load_approval_cache() -> std::collections::HashSet<String> {
-    let path = approval_cache_path();
-    let Ok(contents) = std::fs::read_to_string(&path) else {
+fn load_approval_cache_from(path: &std::path::Path) -> std::collections::HashSet<String> {
+    let Ok(contents) = std::fs::read_to_string(path) else {
         return Default::default();
     };
 
@@ -138,10 +148,14 @@ fn load_approval_cache() -> std::collections::HashSet<String> {
         .collect()
 }
 
-fn append_approval_cache(hash: &str, command: &str, source: &ConfigSource) {
+fn append_approval_cache_to(
+    path: &std::path::Path,
+    hash: &str,
+    command: &str,
+    source: &ConfigSource,
+) {
     use std::io::Write;
 
-    let path = approval_cache_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -157,8 +171,98 @@ fn append_approval_cache(hash: &str, command: &str, source: &ConfigSource) {
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)
+        .open(path)
     {
         let _ = writeln!(file, "{}", record);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::HookEntry;
+
+    struct MockApprovalUi(std::sync::Mutex<Vec<ApprovalDecision>>);
+
+    impl ApprovalUi for MockApprovalUi {
+        fn prompt_approval(&self, _req: &ApprovalRequest) -> ApprovalDecision {
+            self.0.lock().unwrap().remove(0)
+        }
+    }
+
+    fn make_hook(cmd: &str) -> (HookEntry, ConfigSource) {
+        (HookEntry::Exec { exec: vec![cmd.to_owned()] }, ConfigSource::TeamProject)
+    }
+
+    #[test]
+    fn test_sha256_command_is_stable() {
+        let h1 = sha256_command("foo");
+        let h2 = sha256_command("foo");
+        assert_eq!(h1, h2, "same input must produce same hash");
+        assert!(h1.starts_with("sha256:"), "hash must have sha256: prefix");
+    }
+
+    #[test]
+    fn test_sha256_command_differs_for_different_input() {
+        let h1 = sha256_command("foo");
+        let h2 = sha256_command("bar");
+        assert_ne!(h1, h2, "different inputs must produce different hashes");
+    }
+
+    #[test]
+    fn test_approval_cache_hit_skips_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("approvals.jsonl");
+
+        // Pre-populate the cache with the hash of our command
+        let cmd = "notify-send done";
+        let hash = sha256_command(cmd);
+        let line = serde_json::json!({
+            "command_hash": hash,
+            "command": cmd,
+            "source": "team_project",
+        });
+        std::fs::write(&cache_path, format!("{line}\n")).unwrap();
+
+        // MockApprovalUi that panics if called — cache hit must skip prompt
+        struct PanicUi;
+        impl ApprovalUi for PanicUi {
+            fn prompt_approval(&self, _req: &ApprovalRequest) -> ApprovalDecision {
+                panic!("prompt_approval must not be called on a cache hit");
+            }
+        }
+
+        let hooks = vec![make_hook(cmd)];
+        let result = run_hook_approvals_inner(&hooks, &PanicUi, false, &cache_path);
+        assert!(result.is_ok(), "cache hit must succeed without prompting");
+    }
+
+    #[test]
+    fn test_approval_cache_miss_prompts_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("approvals.jsonl");
+        // Cache does not exist — fresh miss
+
+        let ui = MockApprovalUi(std::sync::Mutex::new(vec![ApprovalDecision::Approved]));
+        let hooks = vec![make_hook("some-command")];
+        let result = run_hook_approvals_inner(&hooks, &ui, false, &cache_path);
+        assert!(result.is_ok(), "approved decision must succeed");
+        // Cache should now exist with the entry
+        assert!(cache_path.exists(), "approval must be persisted to cache");
+        let contents = std::fs::read_to_string(&cache_path).unwrap();
+        assert!(contents.contains("some-command"), "approved command must be in cache");
+    }
+
+    #[test]
+    fn test_approval_denied_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("approvals.jsonl");
+
+        let ui = MockApprovalUi(std::sync::Mutex::new(vec![ApprovalDecision::Denied]));
+        let hooks = vec![make_hook("dangerous-script")];
+        let result = run_hook_approvals_inner(&hooks, &ui, false, &cache_path);
+        assert!(result.is_err(), "denied decision must return error");
+        let err = result.unwrap_err();
+        assert!(err.command.contains("dangerous-script"), "error must name the command");
     }
 }

@@ -112,4 +112,49 @@ mod tests {
         let outside = PathBuf::from("/etc");
         assert!(path_jail_check(&outside, dir.path()).is_err());
     }
+
+    // ─── Task 0.5: stage_local_skills tests ───────────────────────────────────
+
+    #[test]
+    fn test_stage_local_skills_creates_symlinks() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let skill_dir = project_dir.path().join("my_skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let local_skills = vec![skill_dir.clone()];
+
+        stage_local_skills(temp_dir.path(), &local_skills, project_dir.path()).unwrap();
+
+        let expected_link = temp_dir.path().join("skills").join("my_skill");
+        assert!(expected_link.is_symlink(), "symlink must be created at skills/<name>");
+    }
+
+    #[test]
+    fn test_stage_local_skills_returns_staged_paths() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let skill_dir = project_dir.path().join("some_skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let local_skills = vec![skill_dir.clone()];
+
+        let staged = stage_local_skills(temp_dir.path(), &local_skills, project_dir.path()).unwrap();
+
+        assert_eq!(staged.len(), 1, "one skill must be staged");
+        assert!(staged[0].to_string_lossy().contains("some_skill"), "staged path must include skill name");
+    }
+
+    #[test]
+    fn test_stage_local_skills_path_jail_blocks_escape() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        // Point outside the project dir
+        let outside = PathBuf::from("/etc");
+        let local_skills = vec![outside];
+
+        let err = stage_local_skills(temp_dir.path(), &local_skills, project_dir.path())
+            .expect_err("path outside project dir must be rejected");
+        assert!(matches!(err, SkillsError::PathJailViolation { .. }));
+    }
 }

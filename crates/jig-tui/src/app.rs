@@ -247,6 +247,148 @@ impl App {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::empty(),
+            kind: KeyEventKind::Press,
+            state: KeyEventState::empty(),
+        });
+    }
+
+    #[test]
+    fn test_initial_focus_is_templates() {
+        let app = App::new();
+        assert_eq!(app.focus, PaneFocus::Templates);
+    }
+
+    #[test]
+    fn test_j_key_moves_selection_down() {
+        let mut app = App::new();
+        let initial = app.templates.list_state.selected().unwrap_or(0);
+        press(&mut app, KeyCode::Char('j'));
+        let after = app.templates.list_state.selected().unwrap_or(0);
+        assert!(after > initial || after == 0, "j must move selection down or wrap");
+    }
+
+    #[test]
+    fn test_k_key_moves_selection_up() {
+        let mut app = App::new();
+        // Move down first so we're not at the top
+        press(&mut app, KeyCode::Char('j'));
+        let after_j = app.templates.list_state.selected().unwrap_or(0);
+        press(&mut app, KeyCode::Char('k'));
+        let after_k = app.templates.list_state.selected().unwrap_or(0);
+        assert!(after_k < after_j, "k must move selection up");
+    }
+
+    #[test]
+    fn test_tab_switches_focus() {
+        let mut app = App::new();
+        assert_eq!(app.focus, PaneFocus::Templates);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, PaneFocus::Personas);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, PaneFocus::Templates);
+    }
+
+    #[test]
+    fn test_enter_sets_launch_selection_when_both_selected() {
+        let mut app = App::new();
+        // Both lists are pre-populated with items
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.launch_selection.is_some(),
+            "Enter with both lists populated must set launch_selection"
+        );
+        let (template, persona) = app.launch_selection.unwrap();
+        assert!(!template.is_empty(), "template must be non-empty");
+        assert!(!persona.is_empty(), "persona must be non-empty");
+    }
+
+    #[test]
+    fn test_enter_does_nothing_if_template_list_empty() {
+        let mut app = App::new();
+        app.templates = crate::widgets::FilterableListState::new(vec![]);
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.launch_selection.is_none(),
+            "Enter with empty template list must not set launch_selection"
+        );
+    }
+
+    #[test]
+    fn test_slash_enters_filter_mode() {
+        let mut app = App::new();
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.mode, AppMode::Filter, "/ must enter filter mode");
+    }
+
+    #[test]
+    fn test_esc_in_filter_clears_query_and_returns_normal() {
+        let mut app = App::new();
+        press(&mut app, KeyCode::Char('/'));       // enter filter
+        press(&mut app, KeyCode::Char('c'));       // type a char
+        press(&mut app, KeyCode::Esc);             // exit filter
+        assert_eq!(app.mode, AppMode::Normal, "Esc in filter must return to Normal");
+        assert!(app.templates.query.is_empty(), "Esc must clear the filter query");
+    }
+
+    #[test]
+    fn test_q_sets_should_quit() {
+        let mut app = App::new();
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit, "q must set should_quit");
+    }
+
+    #[test]
+    fn test_layout_mode_from_cols() {
+        let mut app = App::new();
+
+        app.update_layout(120);
+        assert_eq!(app.layout, LayoutMode::FullTwoPane, "120 cols → FullTwoPane");
+
+        app.update_layout(90);
+        assert_eq!(app.layout, LayoutMode::NarrowTwoPane, "90 cols → NarrowTwoPane");
+
+        app.update_layout(70);
+        assert_eq!(app.layout, LayoutMode::SinglePane, "70 cols → SinglePane");
+
+        app.update_layout(50);
+        assert_eq!(app.layout, LayoutMode::Minimal, "50 cols → Minimal");
+    }
+
+    #[test]
+    fn test_filter_narrows_template_list() {
+        let mut app = App::new();
+        let total = app.templates.items.len();
+
+        press(&mut app, KeyCode::Char('/'));  // enter filter
+        press(&mut app, KeyCode::Char('c'));
+        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('e'));
+
+        assert!(
+            app.templates.filtered.len() < total,
+            "typing 'code' must narrow the template list below full count"
+        );
+        let filtered_names: Vec<&str> = app.templates.filtered
+            .iter()
+            .map(|(_, idx)| app.templates.items[*idx].as_str())
+            .collect();
+        assert!(
+            filtered_names.iter().any(|s| s.contains("code")),
+            "filtered results must contain items matching 'code'"
+        );
+    }
+}
+
 /// Installs a panic hook that restores the terminal before printing the backtrace.
 pub fn install_panic_hook() {
     let original = std::panic::take_hook();

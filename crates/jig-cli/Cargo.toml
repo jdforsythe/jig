@@ -20,6 +20,10 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 home = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+jig-core = { path = "../jig-core" }
+
 [features]
 default = ["tui"]
 tui = ["dep:jig-tui"]

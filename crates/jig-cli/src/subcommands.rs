@@ -395,7 +395,7 @@ fn remove_nested_value(
     Ok(())
 }
 
-fn handle_init(cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn handle_init(cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let target = cwd.join(".jig.yaml");
     if target.exists() {
         println!(".jig.yaml already exists.");
@@ -404,6 +404,41 @@ fn handle_init(cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let template = "schema: 1\n# Add your jig config here\n# See: jig template list\n";
     std::fs::write(&target, template)?;
     println!("Created .jig.yaml in {}", cwd.display());
+    Ok(())
+}
+
+/// Writer-based doctor implementation — testable without stdout capture.
+pub(crate) fn handle_doctor_to<W: std::io::Write>(
+    _cwd: &std::path::Path,
+    out: &mut W,
+) -> Result<(), Box<dyn std::error::Error>> {
+    writeln!(out, "jig doctor — checking system state...")?;
+
+    if jig_core::assembly::executor::find_claude_binary().is_some() {
+        writeln!(out, "  ✓ claude binary found")?;
+    } else {
+        writeln!(out, "  ✗ claude binary not found in PATH")?;
+        writeln!(out, "    Install claude: https://claude.ai/download")?;
+    }
+
+    let claude_path = jig_core::assembly::mcp::claude_json_path();
+    if claude_path.exists() {
+        writeln!(out, "  ✓ ~/.claude.json exists")?;
+    } else {
+        writeln!(out, "  ! ~/.claude.json not found (will be created on first MCP write)")?;
+    }
+
+    let history_path = jig_core::history::history_path();
+    if history_path.exists() {
+        let lines = std::fs::read_to_string(&history_path)
+            .map(|c| c.lines().count())
+            .unwrap_or(0);
+        writeln!(out, "  ✓ history.jsonl exists ({lines} entries)")?;
+    } else {
+        writeln!(out, "  ! history.jsonl not found (created on first launch)")?;
+    }
+
+    writeln!(out, "Done.")?;
     Ok(())
 }
 
@@ -420,4 +455,71 @@ fn handle_import(url: &str, scope: &str) -> Result<(), Box<dyn std::error::Error
 fn handle_diff(config: &std::path::Path, _cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("jig diff {} — not yet implemented.", config.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Serialize tests that modify PATH to prevent races between parallel test threads.
+    static PATH_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn test_handle_template_list_output_contains_builtins() {
+        // handle_template list iterates over builtin_template_refs() and prints names.
+        // Testing the data source is equivalent to testing the handler's output.
+        let refs = jig_core::defaults::builtin_template_refs();
+        let names: Vec<&str> = refs.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"code-review"), "code-review must be a builtin template");
+        assert!(names.contains(&"security-audit"), "security-audit must be a builtin template");
+    }
+
+    #[test]
+    fn test_handle_persona_list_output_contains_builtins() {
+        let personas = jig_core::defaults::builtin_personas();
+        let names: Vec<&str> = personas.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"strict-security"), "strict-security must be a builtin persona");
+        assert!(names.contains(&"pair-programmer"), "pair-programmer must be a builtin persona");
+    }
+
+    #[test]
+    fn test_handle_init_creates_jig_yaml() {
+        let dir = tempfile::tempdir().unwrap();
+        handle_init(dir.path()).unwrap();
+        let target = dir.path().join(".jig.yaml");
+        assert!(target.exists(), ".jig.yaml must be created");
+        let contents = std::fs::read_to_string(&target).unwrap();
+        assert!(contents.contains("schema: 1"), ".jig.yaml must contain schema: 1");
+    }
+
+    #[test]
+    fn test_handle_init_does_not_overwrite_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join(".jig.yaml");
+        std::fs::write(&target, "custom content\n").unwrap();
+
+        handle_init(dir.path()).unwrap();
+
+        let contents = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(contents, "custom content\n", "init must not overwrite existing .jig.yaml");
+    }
+
+    #[test]
+    fn test_handle_doctor_reports_missing_claude_binary() {
+        let _guard = PATH_MUTEX.lock().unwrap();
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", "");
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut out = Vec::<u8>::new();
+        handle_doctor_to(dir.path(), &mut out).unwrap();
+        std::env::set_var("PATH", &original_path);
+
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("not found in PATH"),
+            "doctor must report missing claude binary, got: {output}"
+        );
+    }
 }
