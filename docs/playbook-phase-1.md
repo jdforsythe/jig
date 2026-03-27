@@ -143,8 +143,13 @@ jig              # open TUI, pick persona, launch
 
 | Gap | Workaround |
 |-----|------------|
-| `-t <name>` doesn't apply built-in template settings (allowedTools etc.) | Put settings directly in `.jig.yaml` |
 | Pre-launch hooks are approved/cached but not run | None yet |
 | `jig sync`, `jig import`, `jig diff` are stubs | N/A |
-| TUI preview shows static "~0 tokens" | Use `--dry-run` to inspect assembled config |
 | `--dry-run --json` outputs text, not JSON | Use `--dry-run` + read the temp file |
+
+## Fixed in Phase 1
+
+| Gap | Fix |
+|-----|-----|
+| `-t <name>` doesn't apply built-in template settings | Fixed: `apply_cli_overrides()` in `resolve.rs:307-317` applies template config at CLI priority; regression test `test_template_config_applied_when_selected` covers it. |
+| TUI preview shows static "~0 tokens" | Fixed: Token count is calculated and color-coded (>4000 warn, >8000 critical). |

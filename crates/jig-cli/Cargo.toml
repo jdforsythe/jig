@@ -19,6 +19,10 @@ tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 home = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+jig-core = { path = "../jig-core" }
 
 [features]
 default = ["tui"]

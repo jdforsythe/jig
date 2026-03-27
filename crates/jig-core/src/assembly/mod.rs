@@ -1,3 +1,4 @@
+pub mod lockfile;
 pub mod mcp;
 pub mod permissions;
 pub mod skills;

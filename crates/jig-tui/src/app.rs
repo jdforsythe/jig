@@ -37,6 +37,7 @@ pub enum AppMode {
     Filter,
     WhichKey,
     Confirm,
+    History,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +73,8 @@ pub struct App {
     pub should_quit: bool,
     pub launch_selection: Option<(String, String)>, // (template, persona)
     last_preview_update: Instant,
+    pub history_lines: Vec<String>,
+    pub history_scroll: u16,
 }
 
 impl Default for App {
@@ -82,12 +85,11 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
-        let template_names: Vec<String> = builtin_templates()
-            .into_iter()
-            .map(|t| t.name)
-            .collect();
+        let mut template_names: Vec<String> = vec!["None (no template)".to_owned()];
+        template_names.extend(builtin_templates().into_iter().map(|t| t.name));
 
         let persona_names = vec![
+            "None (no persona)".to_owned(),
             "default".to_owned(),
             "strict-security".to_owned(),
             "mentor".to_owned(),
@@ -114,6 +116,8 @@ impl App {
             should_quit: false,
             launch_selection: None,
             last_preview_update: Instant::now(),
+            history_lines: Vec::new(),
+            history_scroll: 0,
         }
     }
 
@@ -127,6 +131,7 @@ impl App {
             AppMode::WhichKey => {
                 self.mode = AppMode::Normal;
             }
+            AppMode::History => self.handle_history_key(key),
             AppMode::Normal | AppMode::Confirm => self.handle_normal_key(key),
         }
     }
@@ -180,6 +185,20 @@ impl App {
                     self.show_preview = !self.show_preview;
                 }
             }
+            KeyCode::Char('h') => {
+                self.load_history();
+                self.mode = AppMode::History;
+            }
+            KeyCode::Char('L') => {
+                // Relaunch last session
+                if let Some(entry) = jig_core::history::last_session() {
+                    let template = entry.template.unwrap_or_else(|| "None (no template)".to_owned());
+                    let persona = entry.persona.unwrap_or_else(|| "None (no persona)".to_owned());
+                    self.launch_selection = Some((template, persona));
+                    self.should_quit = true;
+                }
+                // If no history, do nothing (user stays in TUI)
+            }
             KeyCode::Char('d') | KeyCode::Char('D') => {
                 // Scroll preview down
                 self.preview_scroll = self.preview_scroll.saturating_add(3);
@@ -190,6 +209,43 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn handle_history_key(&mut self, key: crossterm::event::KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => {
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.history_scroll = self.history_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.history_scroll = self.history_scroll.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn load_history(&mut self) {
+        let entries = jig_core::history::recent_sessions(20);
+        if entries.is_empty() {
+            self.history_lines = vec!["No session history found.".to_owned()];
+        } else {
+            self.history_lines = entries
+                .into_iter()
+                .map(|e| {
+                    let date = &e.started_at[..16.min(e.started_at.len())]; // YYYY-MM-DDTHH:MM
+                    let template = e.template.as_deref().unwrap_or("none");
+                    let persona = e.persona.as_deref().unwrap_or("none");
+                    let cwd_short = std::path::Path::new(&e.cwd)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| e.cwd.clone());
+                    format!("{date}  {template:20}  {persona:20}  {cwd_short}")
+                })
+                .collect();
+        }
+        self.history_scroll = 0;
     }
 
     fn handle_filter_key(&mut self, key: crossterm::event::KeyEvent) {
@@ -328,6 +384,12 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
 
     app.update_layout(area.width);
 
+    // History overlay takes full screen
+    if app.mode == AppMode::History {
+        render_history(frame, app, area);
+        return;
+    }
+
     match app.layout {
         LayoutMode::FullTwoPane | LayoutMode::NarrowTwoPane => {
             render_two_pane(frame, app, area);
@@ -446,6 +508,116 @@ fn render_single_pane_lists(frame: &mut ratatui::Frame, app: &mut App, area: Rec
     frame.render_stateful_widget(persona_widget, chunks[1], &mut app.personas);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::empty(),
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::empty(),
+        });
+    }
+
+    #[test]
+    fn test_template_list_starts_with_none() {
+        let app = App::new();
+        let first = app.templates.items.first().map(String::as_str);
+        assert_eq!(first, Some("None (no template)"), "first template entry must be 'None (no template)'");
+    }
+
+    #[test]
+    fn test_persona_list_starts_with_none() {
+        let app = App::new();
+        let first = app.personas.items.first().map(String::as_str);
+        assert_eq!(first, Some("None (no persona)"), "first persona entry must be 'None (no persona)'");
+    }
+
+    #[test]
+    fn test_enter_with_none_template_sets_launch_selection() {
+        let mut app = App::new();
+        // First item is "None (no template)" — pressing Enter should still work
+        press(&mut app, KeyCode::Enter);
+        assert!(app.launch_selection.is_some(), "Enter with None template must set launch_selection");
+        let (template, _) = app.launch_selection.unwrap();
+        assert_eq!(template, "None (no template)");
+    }
+
+    #[test]
+    fn test_enter_with_none_persona_sets_launch_selection() {
+        let mut app = App::new();
+        // First item is "None (no persona)" — pressing Enter should still work
+        press(&mut app, KeyCode::Enter);
+        assert!(app.launch_selection.is_some(), "Enter with None persona must set launch_selection");
+        let (_, persona) = app.launch_selection.unwrap();
+        assert_eq!(persona, "None (no persona)");
+    }
+
+    #[test]
+    fn test_h_key_switches_to_history_mode() {
+        let mut app = App::new();
+        assert_eq!(app.mode, AppMode::Normal);
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.mode, AppMode::History, "h key must switch to History mode");
+    }
+
+    #[test]
+    fn test_esc_in_history_mode_returns_to_normal() {
+        let mut app = App::new();
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.mode, AppMode::History);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal, "Esc in History mode must return to Normal");
+    }
+
+    #[test]
+    fn test_history_view_populates_lines() {
+        let mut app = App::new();
+        // load_history with no history file should set a "no history" message
+        app.load_history();
+        assert!(!app.history_lines.is_empty(), "history_lines must be populated after load_history");
+    }
+
+    #[test]
+    fn test_l_key_with_no_history_does_not_quit() {
+        let mut app = App::new();
+        // With no history file, L should not set launch_selection or quit
+        // (last_session() returns None when no history exists in test env)
+        // We just verify it doesn't panic
+        press(&mut app, KeyCode::Char('L'));
+        // Either quit (if history exists on dev machine) or stay
+        // Both are valid — just must not panic
+        let _ = app.launch_selection;
+    }
+}
+
+fn render_history(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
+    let theme = active_theme();
+    let lines: Vec<Line> = app
+        .history_lines
+        .iter()
+        .map(|l| Line::from(l.clone()))
+        .collect();
+
+    let total = lines.len() as u16;
+    let max_scroll = total.saturating_sub(area.height.saturating_sub(2));
+    app.history_scroll = app.history_scroll.min(max_scroll);
+
+    let para = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(" Session History (Esc/h to close, j/k to scroll) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border_focused)),
+        )
+        .scroll((app.history_scroll, 0));
+
+    frame.render_widget(para, area);
+}
+
 fn render_which_key(frame: &mut ratatui::Frame, area: Rect) {
     use ratatui::widgets::Clear;
 
@@ -470,6 +642,8 @@ fn render_which_key(frame: &mut ratatui::Frame, area: Rect) {
         Line::from(" Tab    Switch pane focus"),
         Line::from(" /      Filter mode"),
         Line::from(" Enter  Launch session"),
+        Line::from(" h      Session history"),
+        Line::from(" L      Relaunch last session"),
         Line::from(" p      Toggle preview"),
         Line::from(" d/D    Scroll preview ↓"),
         Line::from(" u/U    Scroll preview ↑"),

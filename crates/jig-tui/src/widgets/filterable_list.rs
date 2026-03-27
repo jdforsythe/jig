@@ -106,7 +106,7 @@ impl FilterableListState {
         if len == 0 {
             return;
         }
-        let next = self.list_state.selected().map_or(0, |i| (i + 1).min(len - 1));
+        let next = self.list_state.selected().map_or(0, |i| (i + 1) % len);
         self.list_state.select(Some(next));
     }
 
@@ -116,6 +116,65 @@ impl FilterableListState {
         }
         let prev = self.list_state.selected().map_or(0, |i| i.saturating_sub(1));
         self.list_state.select(Some(prev));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_list(items: &[&str]) -> FilterableListState {
+        FilterableListState::new(items.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn test_filterable_list_move_down_wraps() {
+        let mut state = make_list(&["a", "b", "c"]);
+        // Start at 0, move to 1, 2, then wrap to 0
+        state.move_down(); // 0 → 1
+        state.move_down(); // 1 → 2
+        state.move_down(); // 2 → 0 (wrap)
+        assert_eq!(state.list_state.selected(), Some(0), "move_down must wrap from last to first");
+    }
+
+    #[test]
+    fn test_filterable_list_filter_narrows() {
+        let mut state = make_list(&["code-review", "data-science", "security-audit"]);
+        state.push_char('c');
+        state.push_char('o');
+        state.push_char('d');
+        // Only items matching "cod" should be in filtered
+        let filtered_names: Vec<&str> = state
+            .filtered
+            .iter()
+            .map(|(_, idx)| state.items[*idx].as_str())
+            .collect();
+        assert!(filtered_names.contains(&"code-review"), "code-review must match 'cod'");
+        assert!(
+            filtered_names.len() < 3,
+            "filtering should narrow the list below full count"
+        );
+    }
+
+    #[test]
+    fn test_filterable_list_clear_query_restores_all() {
+        let mut state = make_list(&["alpha", "beta", "gamma"]);
+        // 'z' appears in none of the items — filtered list will be empty
+        state.push_char('z');
+        assert_eq!(state.filtered.len(), 0, "query 'z' must narrow to empty");
+        state.clear_query();
+        assert_eq!(state.filtered.len(), 3, "clearing query must restore all items");
+    }
+
+    #[test]
+    fn test_filterable_list_selected_item_after_filter() {
+        let mut state = make_list(&["apple", "banana", "cherry"]);
+        // Query "cherry" — should match exactly one item
+        for c in "cherry".chars() {
+            state.push_char(c);
+        }
+        let selected = state.selected_item();
+        assert_eq!(selected, Some("cherry"), "selected item after precise filter must be the matching item");
     }
 }
 

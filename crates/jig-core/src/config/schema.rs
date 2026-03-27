@@ -10,7 +10,12 @@ pub enum ConfigSource {
     GlobalUser,
     TeamProject,
     PersonalLocal,
+    /// Kept for backward compatibility with existing tests and serialized data.
     CliFlag,
+    /// Template config applied via the -t flag (lower priority than explicit CLI flags).
+    TemplateSelected,
+    /// An explicit CLI flag value (e.g. --model, --persona); highest priority.
+    ExplicitCliFlag,
 }
 
 impl std::fmt::Display for ConfigSource {
@@ -20,6 +25,8 @@ impl std::fmt::Display for ConfigSource {
             Self::TeamProject => write!(f, ".jig.yaml"),
             Self::PersonalLocal => write!(f, ".jig.local.yaml"),
             Self::CliFlag => write!(f, "CLI flag"),
+            Self::TemplateSelected => write!(f, "template (-t)"),
+            Self::ExplicitCliFlag => write!(f, "CLI flag (explicit)"),
         }
     }
 }
@@ -224,6 +231,8 @@ mod tests {
         assert_eq!(ConfigSource::TeamProject.to_string(), ".jig.yaml");
         assert_eq!(ConfigSource::PersonalLocal.to_string(), ".jig.local.yaml");
         assert_eq!(ConfigSource::CliFlag.to_string(), "CLI flag");
+        assert_eq!(ConfigSource::TemplateSelected.to_string(), "template (-t)");
+        assert_eq!(ConfigSource::ExplicitCliFlag.to_string(), "CLI flag (explicit)");
     }
 
     #[test]

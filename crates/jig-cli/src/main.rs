@@ -49,21 +49,20 @@ fn main() -> miette::Result<()> {
 fn run_launch(cli: Cli, cwd: &std::path::Path) -> miette::Result<()> {
     use jig_core::history::last_session;
 
-    let _overrides = CliOverrides {
-        template: cli.template.clone(),
-        persona: cli.persona.clone(),
-        model: None,
-    };
-
     // Determine if TUI should open
-    let use_tui = !cli.go && !cli.dry_run && !cli.last && !cli.resume && cli.template.is_none();
+    let use_tui = !cli.go && !cli.dry_run && !cli.last && !cli.resume && cli.template.is_none() && cli.session.is_none();
 
     let (final_template, final_persona) = if use_tui {
         #[cfg(feature = "tui")]
         {
             use jig_tui::app::run_tui;
             match run_tui().map_err(|e| miette::miette!("{}", e))? {
-                Some((t, p)) => (Some(t), Some(p)),
+                Some((t, p)) => {
+                    // Convert "None" sentinel values from TUI to actual None
+                    let effective_template = if t == "None (no template)" { None } else { Some(t) };
+                    let effective_persona = if p == "None (no persona)" { None } else { Some(p) };
+                    (effective_template, effective_persona)
+                }
                 None => return Ok(()), // User quit without selecting
             }
         }
@@ -72,9 +71,26 @@ fn run_launch(cli: Cli, cwd: &std::path::Path) -> miette::Result<()> {
             tracing::warn!("TUI not available in headless build. Use -t <template> to specify a template.");
             (None, None)
         }
+    } else if let Some(uuid) = &cli.session {
+        use jig_core::history::session_by_id;
+        match session_by_id(uuid) {
+            Some(entry) => {
+                // CLI -p overrides the historical persona
+                let persona = cli.persona.clone().or(entry.persona);
+                (entry.template, persona)
+            }
+            None => {
+                eprintln!("Session '{}' not found in history.", uuid);
+                return Ok(());
+            }
+        }
     } else if cli.last || cli.resume {
         match last_session() {
-            Some(entry) => (entry.template, entry.persona),
+            Some(entry) => {
+                // CLI -p overrides the historical persona
+                let persona = cli.persona.clone().or(entry.persona);
+                (entry.template, persona)
+            }
             None => {
                 eprintln!("No previous session found.");
                 return Ok(());
@@ -98,9 +114,11 @@ fn run_launch(cli: Cli, cwd: &std::path::Path) -> miette::Result<()> {
         project_dir: cwd.to_owned(),
         cli_overrides: effective_overrides,
         dry_run: cli.dry_run,
+        json: cli.json,
         approval_ui,
         yes: cli.yes,
         non_interactive: cli.non_interactive,
+        resume: cli.resume,
     };
 
     let exit_code = run_assembly(opts).map_err(|e| miette::miette!("{}", e))?;

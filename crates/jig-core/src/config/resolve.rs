@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -89,6 +89,66 @@ fn load_config_file(path: &Path) -> Option<JigConfig> {
     }
 }
 
+/// Recursively loads a config file and all files it extends, in DFS post-order.
+///
+/// Returns a vec of configs in merge order: base (lowest priority) first, `path` last.
+/// Uses `visited` (canonicalized paths) to detect and skip cycles.
+fn load_config_chain(path: &Path, visited: &mut HashSet<PathBuf>) -> Vec<JigConfig> {
+    if !path.exists() {
+        trace!("Config chain: file not found, skipping: {}", path.display());
+        return Vec::new();
+    }
+
+    // Canonicalize for cycle detection; if canonicalize fails, use the raw path.
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if visited.contains(&canonical) {
+        warn!("Config extends cycle detected, skipping: {}", path.display());
+        return Vec::new();
+    }
+    visited.insert(canonical);
+
+    let Some(config) = load_config_file(path) else {
+        return Vec::new();
+    };
+
+    // Resolve extends paths relative to this file's parent directory.
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let extends_paths: Vec<PathBuf> = config
+        .extends
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|ext| {
+            let p = Path::new(ext);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                parent.join(p)
+            }
+        })
+        .collect();
+
+    // DFS: recurse into each extended file first (lower priority), then append self.
+    let mut chain: Vec<JigConfig> = Vec::new();
+    for ext_path in &extends_paths {
+        chain.extend(load_config_chain(ext_path, visited));
+    }
+    chain.push(config);
+    chain
+}
+
+/// Wrapper that pairs each chain entry with the given `ConfigSource`.
+fn load_config_chain_with_source(
+    path: &Path,
+    visited: &mut HashSet<PathBuf>,
+    source: ConfigSource,
+) -> Vec<(JigConfig, ConfigSource)> {
+    load_config_chain(path, visited)
+        .into_iter()
+        .map(|cfg| (cfg, source))
+        .collect()
+}
+
 /// Finds the global config path: `~/.config/jig/config.yaml`.
 fn global_config_path() -> Option<PathBuf> {
     home::home_dir().map(|h| h.join(".config").join("jig").join("config.yaml"))
@@ -103,44 +163,51 @@ pub fn resolve_config(
     project_dir: &Path,
     cli_overrides: &CliOverrides,
 ) -> Result<ResolvedConfig, ConfigError> {
-    // Load all four layers in parallel (read files concurrently via threads)
     let global_path = global_config_path().unwrap_or_else(|| PathBuf::from("/dev/null"));
+    resolve_config_with_global_path(project_dir, cli_overrides, &global_path)
+}
+
+/// Inner implementation that accepts an explicit global config path.
+/// Used by tests to inject a temp global config without touching the real one.
+fn resolve_config_with_global_path(
+    project_dir: &Path,
+    cli_overrides: &CliOverrides,
+    global_path: &Path,
+) -> Result<ResolvedConfig, ConfigError> {
     let project_path = project_dir.join(".jig.yaml");
     let local_path = project_dir.join(".jig.local.yaml");
 
-    // Parallel reads
-    let (global_result, project_result, local_result) = std::thread::scope(|s| {
-        let global = s.spawn(|| load_config_file(&global_path));
-        let project = s.spawn(|| load_config_file(&project_path));
-        let local = s.spawn(|| load_config_file(&local_path));
-        (global.join().unwrap_or(None), project.join().unwrap_or(None), local.join().unwrap_or(None))
-    });
+    // Serial chain loading: each layer may extend other files (DFS), so we walk
+    // each chain serially. visited sets are per top-level file to allow the same
+    // base file to appear in both project and local chains independently.
+    let mut visited_global: HashSet<PathBuf> = HashSet::new();
+    let global_chain =
+        load_config_chain_with_source(global_path, &mut visited_global, ConfigSource::GlobalUser);
 
-    // Validate each layer before merging
-    if let Some(ref cfg) = global_result {
-        validate_layer(cfg, ConfigSource::GlobalUser)?;
-    }
-    if let Some(ref cfg) = project_result {
-        validate_layer(cfg, ConfigSource::TeamProject)?;
-    }
-    if let Some(ref cfg) = local_result {
-        validate_layer(cfg, ConfigSource::PersonalLocal)?;
+    let mut visited_project: HashSet<PathBuf> = HashSet::new();
+    let project_chain = load_config_chain_with_source(
+        &project_path,
+        &mut visited_project,
+        ConfigSource::TeamProject,
+    );
+
+    let mut visited_local: HashSet<PathBuf> = HashSet::new();
+    let local_chain = load_config_chain_with_source(
+        &local_path,
+        &mut visited_local,
+        ConfigSource::PersonalLocal,
+    );
+
+    // Validate each chain entry before merging.
+    for (cfg, source) in global_chain.iter().chain(&project_chain).chain(&local_chain) {
+        validate_layer(cfg, *source)?;
     }
 
-    // Build layer stack: global (lowest) → project → local → cli (highest)
-    // Template config is applied inside apply_cli_overrides so it sits above all
-    // file-based layers — UI selections override .jig.yaml, not the other way around.
-    let layers: Vec<(Option<JigConfig>, ConfigSource)> = vec![
-        (global_result, ConfigSource::GlobalUser),
-        (project_result, ConfigSource::TeamProject),
-        (local_result, ConfigSource::PersonalLocal),
-    ];
-
+    // Build merged layer stack: global chain (lowest) → project chain → local chain → cli (highest).
     let mut resolved = ResolvedConfig::default();
     let mut persona_layers: Vec<(Persona, ConfigSource)> = Vec::new();
 
-    for (maybe_config, source) in &layers {
-        let Some(config) = maybe_config else { continue };
+    for (config, source) in global_chain.iter().chain(&project_chain).chain(&local_chain) {
         merge_layer(&mut resolved, config, *source, &mut persona_layers);
     }
 
@@ -304,18 +371,27 @@ fn apply_cli_overrides(
     overrides: &CliOverrides,
     persona_layers: &mut Vec<(Persona, ConfigSource)>,
 ) {
+    // Step 1: apply template config first (lower CLI priority — TemplateSelected).
+    // This lets individual explicit CLI flags overwrite template scalar values below.
     if let Some(template_name) = &overrides.template {
         resolved.template_name = Some(template_name.clone());
-        resolved.resolution_trace.insert("template".to_owned(), ConfigSource::CliFlag.to_string());
-        // Merge the template's embedded config at CLI priority so it overrides all
-        // file-based layers (.jig.yaml, .jig.local.yaml).  UI selection is authoritative.
+        resolved.resolution_trace.insert(
+            "template".to_owned(),
+            ConfigSource::TemplateSelected.to_string(),
+        );
+        // Merge the template's embedded config at TemplateSelected priority so it
+        // overrides all file-based layers (.jig.yaml, .jig.local.yaml), but remains
+        // below explicit individual CLI flags applied in step 2.
         if let Some(template) = crate::defaults::builtin_templates()
             .into_iter()
             .find(|t| &t.name == template_name)
         {
-            merge_layer(resolved, &template.config, ConfigSource::CliFlag, persona_layers);
+            merge_layer(resolved, &template.config, ConfigSource::TemplateSelected, persona_layers);
         }
     }
+
+    // Step 2: apply individual explicit CLI flag scalars (ExplicitCliFlag — highest priority).
+    // These overwrite anything set by the template merge above.
     if let Some(persona_name) = &overrides.persona {
         // Add a synthetic persona layer for CLI-specified persona
         persona_layers.push((
@@ -323,13 +399,19 @@ fn apply_cli_overrides(
                 ref_name: Some(persona_name.clone()),
                 ..Default::default()
             },
-            ConfigSource::CliFlag,
+            ConfigSource::ExplicitCliFlag,
         ));
-        resolved.resolution_trace.insert("persona".to_owned(), ConfigSource::CliFlag.to_string());
+        resolved.resolution_trace.insert(
+            "persona".to_owned(),
+            ConfigSource::ExplicitCliFlag.to_string(),
+        );
     }
     if let Some(model) = &overrides.model {
         resolved.model = Some(model.clone());
-        resolved.resolution_trace.insert("settings.model".to_owned(), ConfigSource::CliFlag.to_string());
+        resolved.resolution_trace.insert(
+            "settings.model".to_owned(),
+            ConfigSource::ExplicitCliFlag.to_string(),
+        );
     }
 }
 
@@ -557,6 +639,270 @@ profile:
             resolved.rules.iter().any(|r| r.contains("Think out loud")),
             "CLI -p flag should load built-in rules, got: {:?}",
             resolved.rules
+        );
+    }
+
+    // ─── Task 0.1: Five-layer config precedence tests ───────────────────────────
+
+    /// Helper: write a YAML config file to path.
+    fn write_yaml(path: &std::path::Path, yaml: &str) {
+        std::fs::write(path, yaml).unwrap();
+    }
+
+    #[test]
+    fn test_five_layer_precedence_scalar() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_cfg = global_dir.path().join("config.yaml");
+
+        // Layer 1 (lowest): global
+        write_yaml(&global_cfg, "schema: 1\nprofile:\n  settings:\n    model: from-global\n");
+        // Layer 2: project
+        write_yaml(
+            &dir.path().join(".jig.yaml"),
+            "schema: 1\nprofile:\n  settings:\n    model: from-project\n",
+        );
+        // Layer 3: local
+        write_yaml(
+            &dir.path().join(".jig.local.yaml"),
+            "schema: 1\nprofile:\n  settings:\n    model: from-local\n",
+        );
+        // Layer 4 (highest): CLI
+        let cli = CliOverrides { model: Some("from-cli".to_owned()), ..Default::default() };
+
+        let resolved = resolve_config_with_global_path(dir.path(), &cli, &global_cfg).unwrap();
+        assert_eq!(resolved.model.as_deref(), Some("from-cli"), "CLI must win");
+
+        // Drop CLI → local wins
+        let no_cli = CliOverrides::default();
+        let resolved = resolve_config_with_global_path(dir.path(), &no_cli, &global_cfg).unwrap();
+        assert_eq!(resolved.model.as_deref(), Some("from-local"), "local must beat project and global");
+
+        // Drop local → project wins
+        std::fs::remove_file(dir.path().join(".jig.local.yaml")).unwrap();
+        let resolved = resolve_config_with_global_path(dir.path(), &no_cli, &global_cfg).unwrap();
+        assert_eq!(resolved.model.as_deref(), Some("from-project"), "project must beat global");
+
+        // Drop project → global wins
+        std::fs::remove_file(dir.path().join(".jig.yaml")).unwrap();
+        let resolved = resolve_config_with_global_path(dir.path(), &no_cli, &global_cfg).unwrap();
+        assert_eq!(resolved.model.as_deref(), Some("from-global"), "global must be the floor");
+    }
+
+    #[test]
+    fn test_mcp_servers_union_across_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_cfg = global_dir.path().join("config.yaml");
+
+        write_yaml(
+            &global_cfg,
+            "schema: 1\nprofile:\n  mcp:\n    server_a:\n      type: stdio\n      command: cmd_a\n",
+        );
+        write_yaml(
+            &dir.path().join(".jig.yaml"),
+            "schema: 1\nprofile:\n  mcp:\n    server_b:\n      type: stdio\n      command: cmd_b\n",
+        );
+
+        let resolved = resolve_config_with_global_path(dir.path(), &CliOverrides::default(), &global_cfg).unwrap();
+        assert!(resolved.mcp_servers.contains_key("server_a"), "global MCP server must be present");
+        assert!(resolved.mcp_servers.contains_key("server_b"), "project MCP server must be present");
+    }
+
+    #[test]
+    fn test_skills_union_across_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_cfg = global_dir.path().join("config.yaml");
+
+        write_yaml(
+            &global_cfg,
+            "schema: 1\nprofile:\n  skills:\n    local:\n      - ./skill_a\n",
+        );
+        write_yaml(
+            &dir.path().join(".jig.yaml"),
+            "schema: 1\nprofile:\n  skills:\n    local:\n      - ./skill_b\n",
+        );
+
+        let resolved = resolve_config_with_global_path(dir.path(), &CliOverrides::default(), &global_cfg).unwrap();
+        let skill_strs: Vec<String> = resolved.local_skills.iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(skill_strs.iter().any(|s| s.contains("skill_a")), "global skill must be in union");
+        assert!(skill_strs.iter().any(|s| s.contains("skill_b")), "project skill must be in union");
+    }
+
+    #[test]
+    fn test_env_per_key_last_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let global_dir = tempfile::tempdir().unwrap();
+        let global_cfg = global_dir.path().join("config.yaml");
+
+        write_yaml(
+            &global_cfg,
+            "schema: 1\nprofile:\n  env:\n    FOO: global\n    BAR: global\n",
+        );
+        write_yaml(
+            &dir.path().join(".jig.yaml"),
+            "schema: 1\nprofile:\n  env:\n    FOO: project\n",
+        );
+
+        let resolved = resolve_config_with_global_path(dir.path(), &CliOverrides::default(), &global_cfg).unwrap();
+        assert_eq!(resolved.env.get("FOO").map(String::as_str), Some("project"), "project FOO must override global");
+        assert_eq!(resolved.env.get("BAR").map(String::as_str), Some("global"), "BAR only in global must survive");
+    }
+
+    // ─── Config precedence fix: ExplicitCliFlag > TemplateSelected ──────────────
+
+    /// Regression test: `jig -t code-review --model claude-opus` must use `claude-opus`.
+    /// The "base" template has no model set, so any model the template might inject
+    /// must not win over an explicit --model flag.
+    #[test]
+    fn test_explicit_cli_model_overrides_template_model() {
+        let dir = tempfile::tempdir().unwrap();
+        // Use "base" template (JigConfig::default — no model set) combined with an
+        // explicit --model CLI flag to verify ExplicitCliFlag beats TemplateSelected.
+        let overrides = CliOverrides {
+            template: Some("base".to_owned()),
+            model: Some("claude-opus".to_owned()),
+            ..Default::default()
+        };
+        let resolved = resolve_config(dir.path(), &overrides).unwrap();
+        assert_eq!(
+            resolved.model.as_deref(),
+            Some("claude-opus"),
+            "explicit --model must win over template config"
+        );
+        // Resolution trace must reflect ExplicitCliFlag, not TemplateSelected
+        let trace_source = resolved.resolution_trace.get("settings.model").map(String::as_str);
+        assert_eq!(
+            trace_source,
+            Some(ConfigSource::ExplicitCliFlag.to_string().as_str()),
+            "settings.model trace must be ExplicitCliFlag, got: {:?}",
+            trace_source
+        );
+    }
+
+    /// Verify that when a template is selected, template-sourced values in the
+    /// resolution_trace are tagged as TemplateSelected, not ExplicitCliFlag.
+    #[test]
+    fn test_template_selected_source_tracking() {
+        let dir = tempfile::tempdir().unwrap();
+        // "code-review" has MCP-free config but adds disallowed/allowed tools —
+        // those go through merge_layer with TemplateSelected source.
+        // We check the "template" key in the trace which is set explicitly.
+        let overrides = CliOverrides {
+            template: Some("code-review".to_owned()),
+            ..Default::default()
+        };
+        let resolved = resolve_config(dir.path(), &overrides).unwrap();
+        let template_trace = resolved.resolution_trace.get("template").map(String::as_str);
+        assert_eq!(
+            template_trace,
+            Some(ConfigSource::TemplateSelected.to_string().as_str()),
+            "template trace must be TemplateSelected, got: {:?}",
+            template_trace
+        );
+        // Confirm no "settings.model" trace entry — code-review has no model field
+        assert!(
+            !resolved.resolution_trace.contains_key("settings.model"),
+            "code-review template sets no model; settings.model should not appear in trace"
+        );
+    }
+
+    // ─── extends DFS resolution tests ───────────────────────────────────────────
+
+    /// A project config that extends a base file should merge the base file's values
+    /// at lower priority, with the extending file's values winning for scalars.
+    #[test]
+    fn test_extends_single_file_merges_base() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write base config with model="from-base"
+        let base_path = dir.path().join("base.yaml");
+        write_yaml(&base_path, "schema: 1\nprofile:\n  settings:\n    model: from-base\n");
+
+        // Write project config that extends the base
+        let project_yaml = format!(
+            "schema: 1\nextends:\n  - {}\n",
+            base_path.display()
+        );
+        write_yaml(&dir.path().join(".jig.yaml"), &project_yaml);
+
+        let resolved = resolve_config(dir.path(), &CliOverrides::default()).unwrap();
+        assert_eq!(
+            resolved.model.as_deref(),
+            Some("from-base"),
+            "model from extended base file must be present in resolved config"
+        );
+    }
+
+    /// Config A extends B which extends A — cycle detection must prevent infinite
+    /// recursion and must not panic. The cycle entry is silently skipped (with warn).
+    #[test]
+    fn test_extends_cycle_detected() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let a_path = dir.path().join("a.yaml");
+        let b_path = dir.path().join("b.yaml");
+
+        // A extends B, B extends A
+        write_yaml(
+            &a_path,
+            &format!("schema: 1\nextends:\n  - {}\n", b_path.display()),
+        );
+        write_yaml(
+            &b_path,
+            &format!("schema: 1\nextends:\n  - {}\n", a_path.display()),
+        );
+
+        // Point project config at a.yaml via extends from .jig.yaml
+        let project_yaml = format!("schema: 1\nextends:\n  - {}\n", a_path.display());
+        write_yaml(&dir.path().join(".jig.yaml"), &project_yaml);
+
+        // Must not panic or hang; cycle is detected and skipped.
+        let result = resolve_config(dir.path(), &CliOverrides::default());
+        assert!(result.is_ok(), "cycle in extends must not error, got: {:?}", result.err());
+    }
+
+    /// Merge order for DFS post-order: if A extends [B, C] and B extends D,
+    /// the expected merge order is D → B → C → A (D lowest, A highest priority).
+    #[test]
+    fn test_extends_dfs_order() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // D: model = "D"
+        let d_path = dir.path().join("d.yaml");
+        write_yaml(&d_path, "schema: 1\nprofile:\n  settings:\n    model: D\n");
+
+        // B extends D: model = "B"
+        let b_path = dir.path().join("b.yaml");
+        write_yaml(
+            &b_path,
+            &format!(
+                "schema: 1\nextends:\n  - {}\nprofile:\n  settings:\n    model: B\n",
+                d_path.display()
+            ),
+        );
+
+        // C: model = "C"
+        let c_path = dir.path().join("c.yaml");
+        write_yaml(&c_path, "schema: 1\nprofile:\n  settings:\n    model: C\n");
+
+        // A extends [B, C]: model = "A"
+        let project_yaml = format!(
+            "schema: 1\nextends:\n  - {}\n  - {}\nprofile:\n  settings:\n    model: A\n",
+            b_path.display(),
+            c_path.display()
+        );
+        write_yaml(&dir.path().join(".jig.yaml"), &project_yaml);
+
+        // DFS post-order: D, B, C, A — A is highest priority (last-wins for scalar model).
+        let resolved = resolve_config(dir.path(), &CliOverrides::default()).unwrap();
+        assert_eq!(
+            resolved.model.as_deref(),
+            Some("A"),
+            "A (the extending file itself) must win as the highest-priority entry in DFS order"
         );
     }
 }

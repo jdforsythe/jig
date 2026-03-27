@@ -71,6 +71,9 @@ ureq = "2"
 # Proptest
 proptest = "1"
 
+# Testing utilities
+tempfile = "3"
+
 # Snapshot testing
 insta = { version = "1", features = ["yaml"] }
 
