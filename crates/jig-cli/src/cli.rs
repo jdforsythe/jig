@@ -145,8 +145,12 @@ pub struct SyncArgs {
 
 #[derive(Args, Debug)]
 pub struct ImportArgs {
-    /// URL to import from
-    pub url: String,
+    /// URL to import from (omit to import from ~/.claude.json for current project)
+    pub url: Option<String>,
+
+    /// Show what would be written without creating files
+    #[arg(long)]
+    pub dry_run: bool,
 
     /// Target scope
     #[arg(long, default_value = "project")]
@@ -165,6 +169,10 @@ pub struct HistoryArgs {
     /// Limit number of entries shown
     #[arg(long, default_value = "20")]
     pub limit: usize,
+
+    /// Show persona and exit code columns
+    #[arg(long)]
+    pub verbose: bool,
 }
 
 #[derive(Args, Debug)]

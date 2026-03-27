@@ -14,12 +14,12 @@ pub fn dispatch(cmd: &Commands, cwd: &Path, json: bool) -> Result<(), Box<dyn st
         Commands::Template(args) => handle_template(&args.subcommand, cwd, json),
         Commands::Persona(args) => handle_persona(&args.subcommand, json),
         Commands::Skill(args) => handle_skill(&args.subcommand, json),
-        Commands::History(args) => handle_history(args.limit, json),
+        Commands::History(args) => handle_history(args.limit, args.verbose, json),
         Commands::Doctor(args) => handle_doctor_to(cwd, args.audit, &mut std::io::stdout()),
         Commands::Config(args) => handle_config(&args.subcommand, cwd, json),
         Commands::Init => handle_init(cwd),
         Commands::Sync(_args) => handle_sync(),
-        Commands::Import(args) => handle_import(&args.url, &args.scope),
+        Commands::Import(args) => handle_import(args.url.as_deref(), &args.scope, args.dry_run, cwd),
         Commands::Diff(args) => handle_diff(&args.config, cwd),
         Commands::Completions(_) => Ok(()), // handled in main.rs before routing here
     }
@@ -122,7 +122,7 @@ fn handle_skill(sub: &SkillSubcommand, json: bool) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-fn handle_history(limit: usize, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn handle_history(limit: usize, verbose: bool, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     use jig_core::history::history_path;
 
     let path = history_path();
@@ -136,26 +136,63 @@ fn handle_history(limit: usize, json: bool) -> Result<(), Box<dyn std::error::Er
     }
 
     let contents = std::fs::read_to_string(&path)?;
-    let lines: Vec<&str> = contents.lines().collect();
+    let all_lines: Vec<serde_json::Value> = contents
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
 
-    // Tail-first reading for recent sessions
-    let recent: Vec<serde_json::Value> = lines
+    // Build exit record map: session_id → exit record
+    let exit_map: std::collections::HashMap<String, serde_json::Value> = all_lines
+        .iter()
+        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("exit"))
+        .filter_map(|v| {
+            v.get("session_id").and_then(|id| id.as_str()).map(|id| (id.to_owned(), v.clone()))
+        })
+        .collect();
+
+    // Collect recent start records
+    let recent: Vec<serde_json::Value> = all_lines
         .iter()
         .rev()
-        .take(limit * 2) // over-read since we filter start records
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .filter(|v: &serde_json::Value| v.get("type").and_then(|t| t.as_str()) == Some("start"))
+        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("start"))
         .take(limit)
+        .cloned()
         .collect();
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&recent)?);
+        // Augment start records with exit info
+        let augmented: Vec<serde_json::Value> = recent
+            .iter()
+            .map(|entry| {
+                let mut e = entry.clone();
+                if let Some(id) = entry.get("session_id").and_then(|v| v.as_str()) {
+                    if let Some(exit) = exit_map.get(id) {
+                        e["exit_code"] = exit["exit_code"].clone();
+                        e["ended_at"] = exit["ended_at"].clone();
+                    }
+                }
+                e
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&augmented)?);
     } else {
         for entry in &recent {
-            let id = entry["session_id"].as_str().unwrap_or("?");
+            let id = &entry["session_id"].as_str().unwrap_or("?")[..8.min(entry["session_id"].as_str().unwrap_or("?").len())];
             let template = entry["template"].as_str().unwrap_or("none");
-            let started = entry["started_at"].as_str().unwrap_or("?");
-            println!("{started}  {template:20}  {id}");
+            let started = &entry["started_at"].as_str().unwrap_or("?")[..16.min(entry["started_at"].as_str().unwrap_or("?").len())];
+
+            if verbose {
+                let persona = entry["persona"].as_str().unwrap_or("none");
+                let exit_code = entry.get("session_id")
+                    .and_then(|sid| sid.as_str())
+                    .and_then(|sid| exit_map.get(sid))
+                    .and_then(|e| e["exit_code"].as_i64())
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "?".to_owned());
+                println!("{started}  {template:20}  {persona:20}  exit:{exit_code}  {id}");
+            } else {
+                println!("{started}  {template:20}  {id}");
+            }
         }
     }
     Ok(())
@@ -630,9 +667,143 @@ fn handle_sync() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_import(url: &str, scope: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("jig import {url} --scope {scope} — not yet implemented.");
+fn handle_import(
+    url: Option<&str>,
+    scope: &str,
+    dry_run: bool,
+    cwd: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(url) = url {
+        println!("jig import {url} --scope {scope} — URL import not yet implemented.");
+        return Ok(());
+    }
+
+    // Import from ~/.claude.json for the current project directory
+    import_from_claude_json(cwd, scope, dry_run)
+}
+
+/// Reverse-engineers the current project's MCP config from ~/.claude.json into .jig.yaml.
+fn import_from_claude_json(
+    cwd: &Path,
+    scope: &str,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let claude_path = jig_core::assembly::mcp::claude_json_path();
+    if !claude_path.exists() {
+        println!("~/.claude.json not found. No config to import.");
+        return Ok(());
+    }
+
+    let contents = std::fs::read_to_string(&claude_path)?;
+    let doc: serde_json::Value = serde_json::from_str(&contents)?;
+
+    let cwd_key = std::fs::canonicalize(cwd)
+        .unwrap_or_else(|_| cwd.to_owned())
+        .to_string_lossy()
+        .into_owned();
+
+    // Navigate to projects.<cwd>.mcpServers using direct map access
+    let mcp_servers = doc
+        .get("projects")
+        .and_then(|p| p.get(&cwd_key))
+        .and_then(|proj| proj.get("mcpServers"))
+        .and_then(|s| s.as_object());
+
+    let servers = match mcp_servers {
+        Some(s) if !s.is_empty() => s,
+        _ => {
+            println!(
+                "No MCP servers found in ~/.claude.json for this project ({}).",
+                cwd_key
+            );
+            return Ok(());
+        }
+    };
+
+    // Build .jig.yaml MCP section with credential detection
+    let mut mcp_yaml = String::from("schema: 1\nprofile:\n  mcp:\n");
+    let mut has_credentials = false;
+
+    for (name, server) in servers {
+        mcp_yaml.push_str(&format!("    {}:\n", name));
+        if let Some(t) = server.get("type").and_then(|v| v.as_str()) {
+            mcp_yaml.push_str(&format!("      type: {t}\n"));
+        }
+        if let Some(cmd) = server.get("command").and_then(|v| v.as_str()) {
+            mcp_yaml.push_str(&format!("      command: {cmd}\n"));
+        }
+        if let Some(args) = server.get("args").and_then(|v| v.as_array()) {
+            let args_yaml: Vec<String> = args
+                .iter()
+                .filter_map(|a| a.as_str())
+                .map(|a| format!("        - {a}"))
+                .collect();
+            if !args_yaml.is_empty() {
+                mcp_yaml.push_str("      args:\n");
+                mcp_yaml.push_str(&args_yaml.join("\n"));
+                mcp_yaml.push('\n');
+            }
+        }
+        if let Some(url) = server.get("url").and_then(|v| v.as_str()) {
+            mcp_yaml.push_str(&format!("      url: {url}\n"));
+        }
+        if let Some(env) = server.get("env").and_then(|v| v.as_object()) {
+            if !env.is_empty() {
+                mcp_yaml.push_str("      env:\n");
+                for (k, v) in env {
+                    let val = v.as_str().unwrap_or("");
+                    if is_credential_like(k) {
+                        has_credentials = true;
+                        mcp_yaml.push_str(&format!("        {k}: \"${{{}}}\"  # credential — set via env var\n", k));
+                    } else {
+                        mcp_yaml.push_str(&format!("        {k}: {val}\n"));
+                    }
+                }
+            }
+        }
+    }
+
+    if dry_run {
+        println!("# Dry run — would write to {}:", scope_path(cwd, scope).display());
+        println!("{}", mcp_yaml);
+        if has_credentials {
+            println!("# Detected credentials — sensitive values replaced with ${{ENV_VAR}} references.");
+            println!("# Set these environment variables before launching jig.");
+        }
+    } else {
+        let target = scope_path(cwd, scope);
+        if target.exists() {
+            println!("Warning: {} already exists. Showing what would be added:", target.display());
+            println!("{}", mcp_yaml);
+            println!("Run with --dry-run to preview, then merge manually.");
+        } else {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&target, &mcp_yaml)?;
+            println!("Created {}", target.display());
+            if has_credentials {
+                println!(
+                    "Detected credentials — sensitive env values replaced with ${{ENV_VAR}} references.\n\
+                     Set those environment variables before launching jig, or move them to .jig.local.yaml."
+                );
+            }
+        }
+    }
+
     Ok(())
+}
+
+fn scope_path(cwd: &Path, scope: &str) -> std::path::PathBuf {
+    config_path_for_scope(cwd, scope)
+}
+
+/// Returns true if an env var key looks like it holds a credential.
+fn is_credential_like(key: &str) -> bool {
+    let lower = key.to_lowercase();
+    lower.contains("key") || lower.contains("token") || lower.contains("secret")
+        || lower.contains("password") || lower.contains("credential") || lower.contains("api")
+        || lower.contains("auth") || lower.contains("passwd")
 }
 
 fn handle_diff(config: &std::path::Path, cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
