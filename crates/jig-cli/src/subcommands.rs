@@ -15,7 +15,7 @@ pub fn dispatch(cmd: &Commands, cwd: &Path, json: bool) -> Result<(), Box<dyn st
         Commands::Persona(args) => handle_persona(&args.subcommand, json),
         Commands::Skill(args) => handle_skill(&args.subcommand, json),
         Commands::History(args) => handle_history(args.limit, args.verbose, json),
-        Commands::Doctor(args) => handle_doctor_to(cwd, args.audit, &mut std::io::stdout()),
+        Commands::Doctor(args) => handle_doctor_to(cwd, args.audit, args.migrate, &mut std::io::stdout()),
         Commands::Config(args) => handle_config(&args.subcommand, cwd, json),
         Commands::Init => handle_init(cwd),
         Commands::Sync(_args) => handle_sync(),
@@ -25,7 +25,7 @@ pub fn dispatch(cmd: &Commands, cwd: &Path, json: bool) -> Result<(), Box<dyn st
     }
 }
 
-fn handle_template(sub: &TemplateSubcommand, _cwd: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn handle_template(sub: &TemplateSubcommand, cwd: &Path, json: bool) -> Result<(), Box<dyn std::error::Error>> {
     match sub {
         TemplateSubcommand::List => {
             let templates = builtin_template_refs();
@@ -56,6 +56,39 @@ fn handle_template(sub: &TemplateSubcommand, _cwd: &Path, json: bool) -> Result<
                 let available: Vec<_> = templates.iter().map(|t| t.name.as_str()).collect();
                 eprintln!("Template '{name}' not found. Available: {}", available.join(", "));
                 std::process::exit(1);
+            }
+        }
+        TemplateSubcommand::New => {
+            #[cfg(feature = "tui")]
+            {
+                jig_tui::editor::run_editor_tui(
+                    jig_tui::editor::EditorEntryPoint::NewTemplate,
+                    None,
+                    cwd,
+                )
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                let _ = cwd;
+                eprintln!("Editor mode requires TUI feature. Build without --no-default-features.");
+            }
+        }
+        TemplateSubcommand::Edit { name } => {
+            #[cfg(feature = "tui")]
+            {
+                let draft = jig_core::editor::load_draft_for_template(name);
+                jig_tui::editor::run_editor_tui(
+                    jig_tui::editor::EditorEntryPoint::EditTemplate,
+                    Some(draft),
+                    cwd,
+                )
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                let _ = (name, cwd);
+                eprintln!("Editor mode requires TUI feature.");
             }
         }
     }
@@ -202,6 +235,7 @@ fn handle_history(limit: usize, verbose: bool, json: bool) -> Result<(), Box<dyn
 pub(crate) fn handle_doctor_to<W: std::io::Write>(
     cwd: &Path,
     audit: bool,
+    migrate: bool,
     out: &mut W,
 ) -> Result<(), Box<dyn std::error::Error>> {
     writeln!(out, "jig doctor — checking system state...")?;
@@ -317,6 +351,90 @@ pub(crate) fn handle_doctor_to<W: std::io::Write>(
         }
 
         writeln!(out, "Audit complete.")?;
+    }
+
+    if migrate {
+        use jig_core::config::migrate::{needs_migration, CURRENT_SCHEMA_VERSION};
+        use jig_core::config::migration::apply_migration_chain;
+        use std::path::PathBuf;
+
+        writeln!(out, "")?;
+        writeln!(out, "jig doctor --migrate — checking schema versions...")?;
+
+        let global_config = home::home_dir()
+            .unwrap_or_default()
+            .join(".config")
+            .join("jig")
+            .join("config.yaml");
+
+        let project_path = cwd.join(".jig.yaml");
+        let local_path = cwd.join(".jig.local.yaml");
+
+        let paths: Vec<PathBuf> = [global_config, project_path, local_path]
+            .into_iter()
+            .filter(|p| p.exists())
+            .collect();
+
+        if paths.is_empty() {
+            writeln!(out, "  No config files found.")?;
+        }
+
+        for path in &paths {
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    writeln!(out, "  ✗ Could not read {}: {e}", path.display())?;
+                    continue;
+                }
+            };
+            let version: u32 = serde_yaml::from_str::<serde_json::Value>(&content)
+                .ok()
+                .and_then(|v| v.get("schema").and_then(|s| s.as_u64()))
+                .map(|v| v as u32)
+                .unwrap_or(1);
+
+            if needs_migration(version) {
+                writeln!(
+                    out,
+                    "  ! {} requires migration (schema v{} → v{})",
+                    path.display(),
+                    version,
+                    CURRENT_SCHEMA_VERSION
+                )?;
+                let result = apply_migration_chain(path, version, |_changes| {
+                    // Auto-confirm when --migrate is explicitly passed
+                    true
+                });
+                match result {
+                    Ok(outcome) if !outcome.changes.is_empty() => {
+                        writeln!(
+                            out,
+                            "  ✓ Migrated {} (backup: {})",
+                            path.display(),
+                            outcome.backup_path.display()
+                        )?;
+                    }
+                    Ok(_) => {
+                        writeln!(
+                            out,
+                            "  ✓ {} is already at current schema version",
+                            path.display()
+                        )?;
+                    }
+                    Err(e) => {
+                        writeln!(out, "  ✗ Migration failed for {}: {e}", path.display())?;
+                    }
+                }
+            } else {
+                writeln!(
+                    out,
+                    "  ✓ {} schema version is current (v{version})",
+                    path.display()
+                )?;
+            }
+        }
+
+        writeln!(out, "Migration check complete.")?;
     }
 
     Ok(())
@@ -941,7 +1059,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::<u8>::new();
-        handle_doctor_to(dir.path(), false, &mut out).unwrap();
+        handle_doctor_to(dir.path(), false, false, &mut out).unwrap();
         std::env::set_var("PATH", &original_path);
 
         let output = String::from_utf8(out).unwrap();
@@ -955,7 +1073,7 @@ mod tests {
     fn test_handle_doctor_audit_flag() {
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::<u8>::new();
-        handle_doctor_to(dir.path(), true, &mut out).unwrap();
+        handle_doctor_to(dir.path(), true, false, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(
             output.contains("audit"),
@@ -967,9 +1085,23 @@ mod tests {
     fn test_handle_doctor_no_audit_flag() {
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::<u8>::new();
-        handle_doctor_to(dir.path(), false, &mut out).unwrap();
+        handle_doctor_to(dir.path(), false, false, &mut out).unwrap();
         let output = String::from_utf8(out).unwrap();
         assert!(!output.contains("security checks"), "doctor without --audit must not show audit section");
+    }
+
+    #[test]
+    fn test_handle_doctor_migrate_flag_reports_schema_status() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write a config file with current schema version
+        std::fs::write(dir.path().join(".jig.yaml"), "schema: 1\n").unwrap();
+        let mut out = Vec::<u8>::new();
+        handle_doctor_to(dir.path(), false, true, &mut out).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("Migration check complete"),
+            "doctor --migrate must include migration output, got: {output}"
+        );
     }
 
     #[test]

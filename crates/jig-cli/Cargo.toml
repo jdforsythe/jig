@@ -28,5 +28,16 @@ jig-core = { path = "../jig-core" }
 default = ["tui"]
 tui = ["dep:jig-tui"]
 
+[package.metadata.binstall]
+pkg-url = "https://github.com/jdforsythe/jig/releases/download/v{ version }/{ name }-{ target }{ binary-ext }"
+bin-dir = "{ name }{ binary-ext }"
+pkg-fmt = "bin"
+
+[package.metadata.binstall.overrides]
+"x86_64-apple-darwin" = { pkg-url = "https://github.com/jdforsythe/jig/releases/download/v{ version }/jig-macos-x86_64" }
+"aarch64-apple-darwin" = { pkg-url = "https://github.com/jdforsythe/jig/releases/download/v{ version }/jig-macos-arm64" }
+"x86_64-unknown-linux-gnu" = { pkg-url = "https://github.com/jdforsythe/jig/releases/download/v{ version }/jig-linux-x86_64" }
+"aarch64-unknown-linux-gnu" = { pkg-url = "https://github.com/jdforsythe/jig/releases/download/v{ version }/jig-linux-aarch64" }
+
 [lints]
 workspace = true

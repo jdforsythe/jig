@@ -108,6 +108,13 @@ pub enum TemplateSubcommand {
     List,
     /// Show a template's resolved config
     Show { name: String },
+    /// Create a new template interactively
+    New,
+    /// Edit an existing template
+    Edit {
+        /// Template name to edit
+        name: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -162,6 +169,9 @@ pub struct DoctorArgs {
     /// Run full security audit (config validation, file permissions)
     #[arg(long)]
     pub audit: bool,
+    /// Run schema migration on outdated config files
+    #[arg(long)]
+    pub migrate: bool,
 }
 
 #[derive(Args, Debug)]

@@ -1,4 +1,5 @@
 pub mod lockfile;
+pub mod global_lock;
 pub mod mcp;
 pub mod permissions;
 pub mod skills;
