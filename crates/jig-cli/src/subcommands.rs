@@ -478,7 +478,7 @@ pub(crate) fn handle_doctor_to<W: std::io::Write>(
     writeln!(out, "Done.")?;
 
     if audit {
-        writeln!(out, "")?;
+        writeln!(out)?;
         writeln!(out, "jig doctor --audit — running security checks...")?;
 
         // Check global config file permissions (Unix only)
@@ -557,7 +557,7 @@ pub(crate) fn handle_doctor_to<W: std::io::Write>(
         use jig_core::config::migration::apply_migration_chain;
         use std::path::PathBuf;
 
-        writeln!(out, "")?;
+        writeln!(out)?;
         writeln!(out, "jig doctor --migrate — checking schema versions...")?;
 
         let global_config = home::home_dir()

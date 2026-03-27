@@ -148,12 +148,12 @@ impl EditorState {
     }
 
     pub fn new_custom_adhoc(persona: String) -> Self {
-        let mut draft = EditorDraft::default();
-        draft.persona_name = if persona == "None (no persona)" {
+        let persona_name = if persona == "None (no persona)" {
             None
         } else {
             Some(persona)
         };
+        let draft = EditorDraft { persona_name, ..EditorDraft::default() };
         Self::new(draft, EditorEntryPoint::CustomAdHoc)
     }
 
@@ -339,7 +339,7 @@ impl EditorState {
             }
             KeyCode::Char('G') => {
                 self.pending_g = false;
-                self.section = *EditorSection::ALL.last().unwrap();
+                self.section = *EditorSection::ALL.last().expect("ALL is non-empty");
                 self.section_cursor = 0;
             }
             KeyCode::Char('J') | KeyCode::Tab => {

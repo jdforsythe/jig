@@ -133,8 +133,7 @@ impl EditorDraft {
 
     /// Populates a draft from an existing JigConfig.
     pub fn from_jig_config(name: &str, config: &JigConfig) -> Self {
-        let mut draft = Self::default();
-        draft.name = name.to_owned();
+        let mut draft = Self { name: name.to_owned(), ..Self::default() };
 
         if let Some(profile) = &config.profile {
             if let Some(settings) = &profile.settings {
@@ -199,7 +198,7 @@ impl EditorDraft {
 
         let config = self.to_jig_config();
         let yaml = serde_yaml::to_string(&config)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
 
         std::fs::write(&path, yaml)?;
         Ok(path)
@@ -297,9 +296,7 @@ pub fn load_draft_for_template(name: &str) -> EditorDraft {
     }
 
     // Return empty draft with the name set
-    let mut draft = EditorDraft::default();
-    draft.name = name.to_owned();
-    draft
+    EditorDraft { name: name.to_owned(), ..EditorDraft::default() }
 }
 
 #[cfg(test)]

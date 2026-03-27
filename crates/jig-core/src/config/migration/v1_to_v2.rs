@@ -4,10 +4,10 @@ use serde_json::Value;
 pub struct V1ToV2;
 
 impl Migration for V1ToV2 {
-    fn from_version(&self) -> u32 {
+    fn source_version(&self) -> u32 {
         1
     }
-    fn to_version(&self) -> u32 {
+    fn target_version(&self) -> u32 {
         2
     }
     fn description(&self) -> &'static str {

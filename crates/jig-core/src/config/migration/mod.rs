@@ -20,8 +20,8 @@ pub struct MigrationOutcome {
 }
 
 pub trait Migration: Send + Sync {
-    fn from_version(&self) -> u32;
-    fn to_version(&self) -> u32;
+    fn source_version(&self) -> u32;
+    fn target_version(&self) -> u32;
     fn description(&self) -> &'static str;
     /// Returns migrated document + human-readable list of changes made.
     fn migrate(&self, doc: Value) -> Result<(Value, Vec<String>), MigrationError>;
@@ -36,7 +36,7 @@ pub fn migration_chain(from_version: u32) -> Vec<Box<dyn Migration>> {
     use crate::config::migrate::CURRENT_SCHEMA_VERSION;
     all_migrations()
         .into_iter()
-        .filter(|m| m.from_version() >= from_version && m.to_version() <= CURRENT_SCHEMA_VERSION)
+        .filter(|m| m.source_version() >= from_version && m.target_version() <= CURRENT_SCHEMA_VERSION)
         .collect()
 }
 
@@ -81,7 +81,7 @@ pub fn apply_migration_chain(
         let (new_doc, changes) = migration.migrate(doc)?;
         doc = new_doc;
         all_changes.extend(changes);
-        final_version = migration.to_version();
+        final_version = migration.target_version();
     }
 
     if !confirm(&all_changes) {
@@ -110,7 +110,7 @@ pub fn apply_migration_chain(
     // Convert back to YAML and write
     let yaml_out = serde_yaml::to_string(&doc).map_err(|e| MigrationError::WriteError {
         path: path.to_owned(),
-        source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+        source: std::io::Error::other(e.to_string()),
     })?;
     let tmp_out = path.with_extension("tmp");
     std::fs::write(&tmp_out, &yaml_out).map_err(|e| MigrationError::WriteError {

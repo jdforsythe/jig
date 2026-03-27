@@ -369,7 +369,7 @@ fn run_dry_run(
                 .map(|(h, _)| h.display_command())
                 .collect::<Vec<_>>(),
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output).expect("output is always serializable"));
     } else {
         println!("# Dry run — resolved claude invocation:");
         println!("claude {}", claude_args.join(" "));

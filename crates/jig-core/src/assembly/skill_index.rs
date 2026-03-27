@@ -51,7 +51,7 @@ pub fn write_index(index: &SkillIndex) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let content = serde_json::to_string_pretty(index)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, &path)

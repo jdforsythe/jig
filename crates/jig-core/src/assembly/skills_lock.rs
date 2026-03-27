@@ -60,7 +60,7 @@ pub fn write_skills_lock(lock: &SkillsLock) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let content = toml::to_string_pretty(lock)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     let tmp = path.with_extension("lock.tmp");
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, &path)
