@@ -12,7 +12,7 @@ use super::prompt::compose_system_prompt;
 use super::skills::{SkillsError, create_temp_dir, stage_local_skills};
 use crate::config::resolve::{CliOverrides, ResolvedConfig, resolve_config};
 use crate::history::{HistoryEntry, record_exit, record_start};
-use crate::security::approval::{ApprovalUi, run_hook_approvals};
+use crate::security::approval::{ApprovalUi, run_hook_approvals, run_mcp_approvals};
 
 #[derive(Debug, Error)]
 pub enum AssemblyError {
@@ -98,6 +98,19 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
     let pid = std::process::id();
     let session_id = uuid::Uuid::new_v4().to_string();
 
+    // Step 1.5: Detect git worktree and warn
+    if crate::worktree::is_git_worktree(&canonical_cwd) {
+        if let Some(main_path) = crate::worktree::main_worktree_path(&canonical_cwd) {
+            tracing::warn!(
+                "Running inside a git worktree. Main checkout: {}. \
+                 Config and MCP entries are scoped to the worktree directory.",
+                main_path.display()
+            );
+        } else {
+            tracing::warn!("Running inside a git worktree. Config is scoped to this worktree.");
+        }
+    }
+
     // Step 2: Resolve config (all four layers)
     let resolved = resolve_config(&opts.project_dir, &opts.cli_overrides)?;
 
@@ -113,6 +126,20 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
             command: e.command.clone(),
         })?;
     }
+    // Step 6.5: MCP server approval (first-run)
+    if !opts.dry_run && !resolved.mcp_servers.is_empty() {
+        run_mcp_approvals(
+            &resolved.mcp_servers,
+            &resolved.resolution_trace,
+            opts.approval_ui.as_ref(),
+            opts.yes,
+        )
+        .map_err(|e| AssemblyError::HookDenied {
+            hook_source: e.hook_source,
+            command: e.command,
+        })?;
+    }
+
     // Step 7: Run pre_launch hooks (dry_run: show without running)
     if opts.dry_run {
         print_dry_run_hooks(&resolved.pre_launch_hooks);

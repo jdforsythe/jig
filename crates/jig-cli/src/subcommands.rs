@@ -196,6 +196,15 @@ pub(crate) fn handle_doctor_to<W: std::io::Write>(
         writeln!(out, "  ! history.jsonl not found (created on first launch)")?;
     }
 
+    // Check for git worktree
+    if jig_core::worktree::is_git_worktree(cwd) {
+        if let Some(main_path) = jig_core::worktree::main_worktree_path(cwd) {
+            writeln!(out, "  ! git worktree detected (main checkout: {})", main_path.display())?;
+        } else {
+            writeln!(out, "  ! git worktree detected")?;
+        }
+    }
+
     writeln!(out, "Done.")?;
 
     if audit {
