@@ -175,6 +175,22 @@ pub fn session_by_id(id: &str) -> Option<HistoryEntry> {
     None
 }
 
+/// Returns up to `limit` recent session start entries (newest first).
+pub fn recent_sessions(limit: usize) -> Vec<HistoryEntry> {
+    let path = history_path();
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    contents
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<HistoryEntry>(line).ok())
+        .filter(|e| e.entry_type == "start")
+        .take(limit)
+        .collect()
+}
+
 /// Reads the most recent complete session from history.jsonl (tail-first).
 pub fn last_session() -> Option<HistoryEntry> {
     let path = history_path();

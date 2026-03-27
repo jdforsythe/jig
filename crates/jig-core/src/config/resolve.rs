@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -89,6 +89,66 @@ fn load_config_file(path: &Path) -> Option<JigConfig> {
     }
 }
 
+/// Recursively loads a config file and all files it extends, in DFS post-order.
+///
+/// Returns a vec of configs in merge order: base (lowest priority) first, `path` last.
+/// Uses `visited` (canonicalized paths) to detect and skip cycles.
+fn load_config_chain(path: &Path, visited: &mut HashSet<PathBuf>) -> Vec<JigConfig> {
+    if !path.exists() {
+        trace!("Config chain: file not found, skipping: {}", path.display());
+        return Vec::new();
+    }
+
+    // Canonicalize for cycle detection; if canonicalize fails, use the raw path.
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if visited.contains(&canonical) {
+        warn!("Config extends cycle detected, skipping: {}", path.display());
+        return Vec::new();
+    }
+    visited.insert(canonical);
+
+    let Some(config) = load_config_file(path) else {
+        return Vec::new();
+    };
+
+    // Resolve extends paths relative to this file's parent directory.
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let extends_paths: Vec<PathBuf> = config
+        .extends
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|ext| {
+            let p = Path::new(ext);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                parent.join(p)
+            }
+        })
+        .collect();
+
+    // DFS: recurse into each extended file first (lower priority), then append self.
+    let mut chain: Vec<JigConfig> = Vec::new();
+    for ext_path in &extends_paths {
+        chain.extend(load_config_chain(ext_path, visited));
+    }
+    chain.push(config);
+    chain
+}
+
+/// Wrapper that pairs each chain entry with the given `ConfigSource`.
+fn load_config_chain_with_source(
+    path: &Path,
+    visited: &mut HashSet<PathBuf>,
+    source: ConfigSource,
+) -> Vec<(JigConfig, ConfigSource)> {
+    load_config_chain(path, visited)
+        .into_iter()
+        .map(|cfg| (cfg, source))
+        .collect()
+}
+
 /// Finds the global config path: `~/.config/jig/config.yaml`.
 fn global_config_path() -> Option<PathBuf> {
     home::home_dir().map(|h| h.join(".config").join("jig").join("config.yaml"))
@@ -117,39 +177,37 @@ fn resolve_config_with_global_path(
     let project_path = project_dir.join(".jig.yaml");
     let local_path = project_dir.join(".jig.local.yaml");
 
-    // Parallel reads
-    let (global_result, project_result, local_result) = std::thread::scope(|s| {
-        let global = s.spawn(|| load_config_file(global_path));
-        let project = s.spawn(|| load_config_file(&project_path));
-        let local = s.spawn(|| load_config_file(&local_path));
-        (global.join().unwrap_or(None), project.join().unwrap_or(None), local.join().unwrap_or(None))
-    });
+    // Serial chain loading: each layer may extend other files (DFS), so we walk
+    // each chain serially. visited sets are per top-level file to allow the same
+    // base file to appear in both project and local chains independently.
+    let mut visited_global: HashSet<PathBuf> = HashSet::new();
+    let global_chain =
+        load_config_chain_with_source(global_path, &mut visited_global, ConfigSource::GlobalUser);
 
-    // Validate each layer before merging
-    if let Some(ref cfg) = global_result {
-        validate_layer(cfg, ConfigSource::GlobalUser)?;
-    }
-    if let Some(ref cfg) = project_result {
-        validate_layer(cfg, ConfigSource::TeamProject)?;
-    }
-    if let Some(ref cfg) = local_result {
-        validate_layer(cfg, ConfigSource::PersonalLocal)?;
+    let mut visited_project: HashSet<PathBuf> = HashSet::new();
+    let project_chain = load_config_chain_with_source(
+        &project_path,
+        &mut visited_project,
+        ConfigSource::TeamProject,
+    );
+
+    let mut visited_local: HashSet<PathBuf> = HashSet::new();
+    let local_chain = load_config_chain_with_source(
+        &local_path,
+        &mut visited_local,
+        ConfigSource::PersonalLocal,
+    );
+
+    // Validate each chain entry before merging.
+    for (cfg, source) in global_chain.iter().chain(&project_chain).chain(&local_chain) {
+        validate_layer(cfg, *source)?;
     }
 
-    // Build layer stack: global (lowest) → project → local → cli (highest)
-    // Template config is applied inside apply_cli_overrides so it sits above all
-    // file-based layers — UI selections override .jig.yaml, not the other way around.
-    let layers: Vec<(Option<JigConfig>, ConfigSource)> = vec![
-        (global_result, ConfigSource::GlobalUser),
-        (project_result, ConfigSource::TeamProject),
-        (local_result, ConfigSource::PersonalLocal),
-    ];
-
+    // Build merged layer stack: global chain (lowest) → project chain → local chain → cli (highest).
     let mut resolved = ResolvedConfig::default();
     let mut persona_layers: Vec<(Persona, ConfigSource)> = Vec::new();
 
-    for (maybe_config, source) in &layers {
-        let Some(config) = maybe_config else { continue };
+    for (config, source) in global_chain.iter().chain(&project_chain).chain(&local_chain) {
         merge_layer(&mut resolved, config, *source, &mut persona_layers);
     }
 
@@ -749,6 +807,102 @@ profile:
         assert!(
             !resolved.resolution_trace.contains_key("settings.model"),
             "code-review template sets no model; settings.model should not appear in trace"
+        );
+    }
+
+    // ─── extends DFS resolution tests ───────────────────────────────────────────
+
+    /// A project config that extends a base file should merge the base file's values
+    /// at lower priority, with the extending file's values winning for scalars.
+    #[test]
+    fn test_extends_single_file_merges_base() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Write base config with model="from-base"
+        let base_path = dir.path().join("base.yaml");
+        write_yaml(&base_path, "schema: 1\nprofile:\n  settings:\n    model: from-base\n");
+
+        // Write project config that extends the base
+        let project_yaml = format!(
+            "schema: 1\nextends:\n  - {}\n",
+            base_path.display()
+        );
+        write_yaml(&dir.path().join(".jig.yaml"), &project_yaml);
+
+        let resolved = resolve_config(dir.path(), &CliOverrides::default()).unwrap();
+        assert_eq!(
+            resolved.model.as_deref(),
+            Some("from-base"),
+            "model from extended base file must be present in resolved config"
+        );
+    }
+
+    /// Config A extends B which extends A — cycle detection must prevent infinite
+    /// recursion and must not panic. The cycle entry is silently skipped (with warn).
+    #[test]
+    fn test_extends_cycle_detected() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let a_path = dir.path().join("a.yaml");
+        let b_path = dir.path().join("b.yaml");
+
+        // A extends B, B extends A
+        write_yaml(
+            &a_path,
+            &format!("schema: 1\nextends:\n  - {}\n", b_path.display()),
+        );
+        write_yaml(
+            &b_path,
+            &format!("schema: 1\nextends:\n  - {}\n", a_path.display()),
+        );
+
+        // Point project config at a.yaml via extends from .jig.yaml
+        let project_yaml = format!("schema: 1\nextends:\n  - {}\n", a_path.display());
+        write_yaml(&dir.path().join(".jig.yaml"), &project_yaml);
+
+        // Must not panic or hang; cycle is detected and skipped.
+        let result = resolve_config(dir.path(), &CliOverrides::default());
+        assert!(result.is_ok(), "cycle in extends must not error, got: {:?}", result.err());
+    }
+
+    /// Merge order for DFS post-order: if A extends [B, C] and B extends D,
+    /// the expected merge order is D → B → C → A (D lowest, A highest priority).
+    #[test]
+    fn test_extends_dfs_order() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // D: model = "D"
+        let d_path = dir.path().join("d.yaml");
+        write_yaml(&d_path, "schema: 1\nprofile:\n  settings:\n    model: D\n");
+
+        // B extends D: model = "B"
+        let b_path = dir.path().join("b.yaml");
+        write_yaml(
+            &b_path,
+            &format!(
+                "schema: 1\nextends:\n  - {}\nprofile:\n  settings:\n    model: B\n",
+                d_path.display()
+            ),
+        );
+
+        // C: model = "C"
+        let c_path = dir.path().join("c.yaml");
+        write_yaml(&c_path, "schema: 1\nprofile:\n  settings:\n    model: C\n");
+
+        // A extends [B, C]: model = "A"
+        let project_yaml = format!(
+            "schema: 1\nextends:\n  - {}\n  - {}\nprofile:\n  settings:\n    model: A\n",
+            b_path.display(),
+            c_path.display()
+        );
+        write_yaml(&dir.path().join(".jig.yaml"), &project_yaml);
+
+        // DFS post-order: D, B, C, A — A is highest priority (last-wins for scalar model).
+        let resolved = resolve_config(dir.path(), &CliOverrides::default()).unwrap();
+        assert_eq!(
+            resolved.model.as_deref(),
+            Some("A"),
+            "A (the extending file itself) must win as the highest-priority entry in DFS order"
         );
     }
 }
