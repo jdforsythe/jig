@@ -47,6 +47,7 @@ pub struct AssemblyOptions {
     pub approval_ui: Box<dyn ApprovalUi>,
     pub yes: bool,              // only auto-approves cached items
     pub non_interactive: bool,
+    pub resume: bool,           // pass --resume to claude
 }
 
 /// SessionGuard: holds all written state; Drop performs Category A cleanup.
@@ -158,7 +159,7 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
         .map(|r| r.rename_map.clone())
         .unwrap_or_default();
 
-    let claude_args = build_claude_args(&resolved, &temp_path, &rename_map, &opts.project_dir);
+    let claude_args = build_claude_args(&resolved, &temp_path, &rename_map, &opts.project_dir, opts.resume);
 
     // Step 12: Export env vars
     for (k, v) in &resolved.env {
@@ -207,8 +208,13 @@ fn build_claude_args(
     temp_dir: &Path,
     rename_map: &super::permissions::RenameMap,
     project_dir: &Path,
+    resume: bool,
 ) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
+
+    if resume {
+        args.push("--resume".to_owned());
+    }
 
     // System prompt file
     let prompt = compose_system_prompt(resolved, project_dir);
@@ -262,7 +268,7 @@ fn run_dry_run(
     let dummy_rename_map = HashMap::new();
     let dummy_temp = PathBuf::from("/tmp/jig-dry-run");
 
-    let claude_args = build_claude_args(resolved, &dummy_temp, &dummy_rename_map, project_dir);
+    let claude_args = build_claude_args(resolved, &dummy_temp, &dummy_rename_map, project_dir, false);
 
     if json {
         let system_prompt = super::prompt::compose_system_prompt(resolved, project_dir);
@@ -368,5 +374,19 @@ mod tests {
     fn test_run_hook_exec_empty_is_ok() {
         let hook = HookEntry::Exec { exec: vec![] };
         assert!(run_hook(&hook).is_ok());
+    }
+
+    #[test]
+    fn test_build_claude_args_resume_flag() {
+        let resolved = ResolvedConfig::default();
+        let temp = tempfile::tempdir().unwrap();
+        let project_dir = temp.path();
+        let rename_map = std::collections::HashMap::new();
+
+        let args_with_resume = build_claude_args(&resolved, temp.path(), &rename_map, project_dir, true);
+        assert!(args_with_resume.contains(&"--resume".to_owned()), "--resume must be in args when resume=true");
+
+        let args_no_resume = build_claude_args(&resolved, temp.path(), &rename_map, project_dir, false);
+        assert!(!args_no_resume.contains(&"--resume".to_owned()), "--resume must not appear when resume=false");
     }
 }

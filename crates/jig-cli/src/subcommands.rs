@@ -477,15 +477,143 @@ fn remove_nested_value(
 }
 
 pub(crate) fn handle_init(cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let stdin = std::io::stdin();
+    let mut reader = std::io::BufReader::new(stdin.lock());
+    let mut out = std::io::stdout();
+    handle_init_to(cwd, &mut reader, &mut out)
+}
+
+/// Reader/writer-based init implementation — testable without real stdin.
+pub(crate) fn handle_init_to<R: std::io::BufRead, W: std::io::Write>(
+    cwd: &Path,
+    reader: &mut R,
+    out: &mut W,
+) -> Result<(), Box<dyn std::error::Error>> {
     let target = cwd.join(".jig.yaml");
     if target.exists() {
-        println!(".jig.yaml already exists.");
+        writeln!(out, ".jig.yaml already exists.")?;
         return Ok(());
     }
-    let template = "schema: 1\n# Add your jig config here\n# See: jig template list\n";
-    std::fs::write(&target, template)?;
-    println!("Created .jig.yaml in {}", cwd.display());
+
+    // Detect project type and suggest a template
+    let (detected_type, suggested_template) = detect_project(cwd);
+
+    if let Some(ref project_type) = detected_type {
+        writeln!(out, "Detected: {}", project_type)?;
+    }
+
+    let template_names: Vec<String> = jig_core::defaults::builtin_template_refs()
+        .into_iter()
+        .map(|t| t.name)
+        .collect();
+    let default_template = suggested_template.as_deref().unwrap_or("base");
+
+    writeln!(out, "Available templates: {}", template_names.join(", "))?;
+    let chosen_template = prompt_choice(
+        &format!("Template [{}]: ", default_template),
+        &template_names,
+        default_template,
+        reader,
+        out,
+    )?;
+
+    let persona_names: Vec<String> = jig_core::defaults::builtin_personas()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    writeln!(out, "Available personas: {}", persona_names.join(", "))?;
+    let chosen_persona = prompt_choice(
+        "Persona [default]: ",
+        &persona_names,
+        "default",
+        reader,
+        out,
+    )?;
+
+    let yaml = scaffold_jig_yaml(&chosen_template, &chosen_persona);
+    std::fs::write(&target, &yaml)?;
+
+    writeln!(out, "Created .jig.yaml (template: {}, persona: {})", chosen_template, chosen_persona)?;
+    writeln!(out, "Tip: create .jig.local.yaml for personal overrides (add to .gitignore).")?;
+
     Ok(())
+}
+
+/// Detects the project type from indicator files. Returns (description, template_name).
+fn detect_project(cwd: &Path) -> (Option<String>, Option<String>) {
+    let checks: &[(&str, &str, &str)] = &[
+        ("Cargo.toml",        "Rust",    "base"),
+        ("package.json",      "Node.js", "base-frontend"),
+        ("pyproject.toml",    "Python",  "data-science"),
+        ("requirements.txt",  "Python",  "data-science"),
+        ("go.mod",            "Go",      "base"),
+        ("Gemfile",           "Ruby",    "base"),
+        ("Dockerfile",        "DevOps",  "base-devops"),
+        ("docker-compose.yml","DevOps",  "base-devops"),
+        ("mkdocs.yml",        "Docs",    "documentation"),
+    ];
+
+    for (file, label, template) in checks {
+        if cwd.join(file).exists() {
+            return (Some(label.to_string()), Some(template.to_string()));
+        }
+    }
+    (None, None)
+}
+
+/// Prompts for a choice from a list, returning the default on empty input.
+fn prompt_choice<R: std::io::BufRead, W: std::io::Write>(
+    prompt: &str,
+    valid: &[String],
+    default: &str,
+    reader: &mut R,
+    out: &mut W,
+) -> Result<String, Box<dyn std::error::Error>> {
+    loop {
+        write!(out, "{}", prompt)?;
+        out.flush()?;
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return Ok(default.to_owned());
+        }
+        if valid.iter().any(|v| v == trimmed) {
+            return Ok(trimmed.to_owned());
+        }
+        writeln!(out, "  Unknown choice '{}'. Valid options: {}", trimmed, valid.join(", "))?;
+    }
+}
+
+/// Scaffolds a .jig.yaml with commented examples.
+fn scaffold_jig_yaml(template: &str, persona: &str) -> String {
+    format!(
+        "schema: 1\n\
+         \n\
+         # Template to use when launching jig\n\
+         # Run: jig template list  to see all options\n\
+         # template: {template}\n\
+         \n\
+         persona:\n\
+           ref: {persona}\n\
+         \n\
+         # Uncomment to add MCP servers:\n\
+         # profile:\n\
+         #   mcp:\n\
+         #     my-server:\n\
+         #       type: stdio\n\
+         #       command: npx\n\
+         #       args: [\"-y\", \"some-mcp-server\"]\n\
+         \n\
+         # Uncomment to add pre-launch hooks:\n\
+         # hooks:\n\
+         #   pre_launch:\n\
+         #     - exec: [\"./scripts/setup.sh\"]\n\
+         \n\
+         # Personal overrides go in .jig.local.yaml (add that file to .gitignore)\n",
+        template = template,
+        persona = persona,
+    )
 }
 
 fn handle_sync() -> Result<(), Box<dyn std::error::Error>> {
@@ -532,11 +660,29 @@ mod tests {
     #[test]
     fn test_handle_init_creates_jig_yaml() {
         let dir = tempfile::tempdir().unwrap();
-        handle_init(dir.path()).unwrap();
+        // Simulate user pressing Enter for both prompts (accept defaults)
+        let input = b"\n\n";
+        let mut reader = std::io::BufReader::new(&input[..]);
+        let mut out = Vec::<u8>::new();
+        handle_init_to(dir.path(), &mut reader, &mut out).unwrap();
         let target = dir.path().join(".jig.yaml");
         assert!(target.exists(), ".jig.yaml must be created");
         let contents = std::fs::read_to_string(&target).unwrap();
         assert!(contents.contains("schema: 1"), ".jig.yaml must contain schema: 1");
+    }
+
+    #[test]
+    fn test_handle_init_scaffolds_template_and_persona() {
+        let dir = tempfile::tempdir().unwrap();
+        // Simulate user choosing "code-review" template and "mentor" persona
+        let input = b"code-review\nmentor\n";
+        let mut reader = std::io::BufReader::new(&input[..]);
+        let mut out = Vec::<u8>::new();
+        handle_init_to(dir.path(), &mut reader, &mut out).unwrap();
+        let contents = std::fs::read_to_string(dir.path().join(".jig.yaml")).unwrap();
+        assert!(contents.contains("ref: mentor"), "persona ref must appear in .jig.yaml");
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("code-review"), "chosen template must appear in output");
     }
 
     #[test]
@@ -545,10 +691,26 @@ mod tests {
         let target = dir.path().join(".jig.yaml");
         std::fs::write(&target, "custom content\n").unwrap();
 
-        handle_init(dir.path()).unwrap();
+        let input = b"";
+        let mut reader = std::io::BufReader::new(&input[..]);
+        let mut out = Vec::<u8>::new();
+        handle_init_to(dir.path(), &mut reader, &mut out).unwrap();
 
         let contents = std::fs::read_to_string(&target).unwrap();
         assert_eq!(contents, "custom content\n", "init must not overwrite existing .jig.yaml");
+    }
+
+    #[test]
+    fn test_handle_init_detects_rust_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+        // Accept defaults
+        let input = b"\n\n";
+        let mut reader = std::io::BufReader::new(&input[..]);
+        let mut out = Vec::<u8>::new();
+        handle_init_to(dir.path(), &mut reader, &mut out).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("Rust"), "should detect Rust from Cargo.toml");
     }
 
     #[test]
