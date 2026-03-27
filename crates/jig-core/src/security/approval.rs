@@ -113,7 +113,11 @@ fn source_to_tier(source: ConfigSource, _url: Option<&str>) -> HookTrustTier {
         ConfigSource::GlobalUser => HookTrustTier::Full,
         ConfigSource::TeamProject => HookTrustTier::Team,
         ConfigSource::PersonalLocal => HookTrustTier::Personal,
-        ConfigSource::CliFlag => HookTrustTier::Full,
+        // CLI-sourced variants: template selection and explicit flags both carry Full trust
+        // because the user directly initiated them at the command line.
+        ConfigSource::CliFlag | ConfigSource::TemplateSelected | ConfigSource::ExplicitCliFlag => {
+            HookTrustTier::Full
+        }
     }
 }
 

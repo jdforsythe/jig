@@ -81,7 +81,7 @@ pub enum Commands {
     Import(ImportArgs),
 
     /// Diagnose and repair jig state
-    Doctor,
+    Doctor(DoctorArgs),
 
     /// View session history
     History(HistoryArgs),
@@ -151,6 +151,13 @@ pub struct ImportArgs {
     /// Target scope
     #[arg(long, default_value = "project")]
     pub scope: String,
+}
+
+#[derive(Args, Debug)]
+pub struct DoctorArgs {
+    /// Run full security audit (config validation, file permissions)
+    #[arg(long)]
+    pub audit: bool,
 }
 
 #[derive(Args, Debug)]

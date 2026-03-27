@@ -313,18 +313,27 @@ fn apply_cli_overrides(
     overrides: &CliOverrides,
     persona_layers: &mut Vec<(Persona, ConfigSource)>,
 ) {
+    // Step 1: apply template config first (lower CLI priority — TemplateSelected).
+    // This lets individual explicit CLI flags overwrite template scalar values below.
     if let Some(template_name) = &overrides.template {
         resolved.template_name = Some(template_name.clone());
-        resolved.resolution_trace.insert("template".to_owned(), ConfigSource::CliFlag.to_string());
-        // Merge the template's embedded config at CLI priority so it overrides all
-        // file-based layers (.jig.yaml, .jig.local.yaml).  UI selection is authoritative.
+        resolved.resolution_trace.insert(
+            "template".to_owned(),
+            ConfigSource::TemplateSelected.to_string(),
+        );
+        // Merge the template's embedded config at TemplateSelected priority so it
+        // overrides all file-based layers (.jig.yaml, .jig.local.yaml), but remains
+        // below explicit individual CLI flags applied in step 2.
         if let Some(template) = crate::defaults::builtin_templates()
             .into_iter()
             .find(|t| &t.name == template_name)
         {
-            merge_layer(resolved, &template.config, ConfigSource::CliFlag, persona_layers);
+            merge_layer(resolved, &template.config, ConfigSource::TemplateSelected, persona_layers);
         }
     }
+
+    // Step 2: apply individual explicit CLI flag scalars (ExplicitCliFlag — highest priority).
+    // These overwrite anything set by the template merge above.
     if let Some(persona_name) = &overrides.persona {
         // Add a synthetic persona layer for CLI-specified persona
         persona_layers.push((
@@ -332,13 +341,19 @@ fn apply_cli_overrides(
                 ref_name: Some(persona_name.clone()),
                 ..Default::default()
             },
-            ConfigSource::CliFlag,
+            ConfigSource::ExplicitCliFlag,
         ));
-        resolved.resolution_trace.insert("persona".to_owned(), ConfigSource::CliFlag.to_string());
+        resolved.resolution_trace.insert(
+            "persona".to_owned(),
+            ConfigSource::ExplicitCliFlag.to_string(),
+        );
     }
     if let Some(model) = &overrides.model {
         resolved.model = Some(model.clone());
-        resolved.resolution_trace.insert("settings.model".to_owned(), ConfigSource::CliFlag.to_string());
+        resolved.resolution_trace.insert(
+            "settings.model".to_owned(),
+            ConfigSource::ExplicitCliFlag.to_string(),
+        );
     }
 }
 
@@ -677,5 +692,63 @@ profile:
         let resolved = resolve_config_with_global_path(dir.path(), &CliOverrides::default(), &global_cfg).unwrap();
         assert_eq!(resolved.env.get("FOO").map(String::as_str), Some("project"), "project FOO must override global");
         assert_eq!(resolved.env.get("BAR").map(String::as_str), Some("global"), "BAR only in global must survive");
+    }
+
+    // ─── Config precedence fix: ExplicitCliFlag > TemplateSelected ──────────────
+
+    /// Regression test: `jig -t code-review --model claude-opus` must use `claude-opus`.
+    /// The "base" template has no model set, so any model the template might inject
+    /// must not win over an explicit --model flag.
+    #[test]
+    fn test_explicit_cli_model_overrides_template_model() {
+        let dir = tempfile::tempdir().unwrap();
+        // Use "base" template (JigConfig::default — no model set) combined with an
+        // explicit --model CLI flag to verify ExplicitCliFlag beats TemplateSelected.
+        let overrides = CliOverrides {
+            template: Some("base".to_owned()),
+            model: Some("claude-opus".to_owned()),
+            ..Default::default()
+        };
+        let resolved = resolve_config(dir.path(), &overrides).unwrap();
+        assert_eq!(
+            resolved.model.as_deref(),
+            Some("claude-opus"),
+            "explicit --model must win over template config"
+        );
+        // Resolution trace must reflect ExplicitCliFlag, not TemplateSelected
+        let trace_source = resolved.resolution_trace.get("settings.model").map(String::as_str);
+        assert_eq!(
+            trace_source,
+            Some(ConfigSource::ExplicitCliFlag.to_string().as_str()),
+            "settings.model trace must be ExplicitCliFlag, got: {:?}",
+            trace_source
+        );
+    }
+
+    /// Verify that when a template is selected, template-sourced values in the
+    /// resolution_trace are tagged as TemplateSelected, not ExplicitCliFlag.
+    #[test]
+    fn test_template_selected_source_tracking() {
+        let dir = tempfile::tempdir().unwrap();
+        // "code-review" has MCP-free config but adds disallowed/allowed tools —
+        // those go through merge_layer with TemplateSelected source.
+        // We check the "template" key in the trace which is set explicitly.
+        let overrides = CliOverrides {
+            template: Some("code-review".to_owned()),
+            ..Default::default()
+        };
+        let resolved = resolve_config(dir.path(), &overrides).unwrap();
+        let template_trace = resolved.resolution_trace.get("template").map(String::as_str);
+        assert_eq!(
+            template_trace,
+            Some(ConfigSource::TemplateSelected.to_string().as_str()),
+            "template trace must be TemplateSelected, got: {:?}",
+            template_trace
+        );
+        // Confirm no "settings.model" trace entry — code-review has no model field
+        assert!(
+            !resolved.resolution_trace.contains_key("settings.model"),
+            "code-review template sets no model; settings.model should not appear in trace"
+        );
     }
 }

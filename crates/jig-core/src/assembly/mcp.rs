@@ -24,6 +24,86 @@ pub enum McpError {
 
     #[error("Session suffix collision exhausted after 32 retries")]
     SuffixCollision,
+
+    #[error("Env var '${{{var}}}' is unset and has no default")]
+    EnvVarUnset { var: String },
+}
+
+/// Expands `${VAR}` and `${VAR:-default}` in a string.
+/// Returns Err if a variable is unset and has no default.
+fn expand_env_var_str(s: &str) -> Result<String, McpError> {
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // Look for ${
+        if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'{' {
+            // Find the closing }
+            let start = i + 2;
+            let end = s[start..].find('}').map(|j| start + j);
+            if let Some(end) = end {
+                let inner = &s[start..end];
+                // Check for :- default separator
+                let (var_name, default_val) = if let Some(sep) = inner.find(":-") {
+                    (&inner[..sep], Some(&inner[sep + 2..]))
+                } else {
+                    (inner, None)
+                };
+
+                let value = std::env::var(var_name).ok();
+                let expanded = match (value, default_val) {
+                    (Some(v), _) => v,
+                    (None, Some(d)) => d.to_owned(),
+                    (None, None) => {
+                        return Err(McpError::EnvVarUnset { var: var_name.to_owned() });
+                    }
+                };
+                result.push_str(&expanded);
+                i = end + 1; // skip past the '}'
+            } else {
+                // No closing } — treat literally
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+
+    Ok(result)
+}
+
+/// Expands env vars in all string fields of an McpServer.
+fn expand_server_env_vars(server: &McpServer) -> Result<McpServer, McpError> {
+    let command = server.command.as_deref()
+        .map(expand_env_var_str)
+        .transpose()?;
+
+    let args = server.args.as_ref()
+        .map(|args| args.iter().map(|a| expand_env_var_str(a)).collect::<Result<Vec<_>, _>>())
+        .transpose()?;
+
+    let url = server.url.as_deref()
+        .map(expand_env_var_str)
+        .transpose()?;
+
+    let env = server.env.as_ref()
+        .map(|env_map| {
+            env_map.iter()
+                .map(|(k, v)| expand_env_var_str(v).map(|expanded| (k.clone(), expanded)))
+                .collect::<Result<HashMap<String, String>, McpError>>()
+        })
+        .transpose()?;
+
+    Ok(McpServer {
+        server_type: server.server_type.clone(),
+        command,
+        args,
+        env,
+        url,
+    })
 }
 
 /// Returns the path to `~/.claude.json`.
@@ -211,6 +291,14 @@ pub(crate) fn write_atomic_inner(
         session_suffix
     );
 
+    // Expand env vars in server configs before writing.
+    // Approval cache hashes are computed before write_atomic() is called (using
+    // pre-expansion strings), so the pre-expansion constraint is already satisfied.
+    let expanded_servers: HashMap<String, McpServer> = new_servers
+        .iter()
+        .map(|(name, server)| expand_server_env_vars(server).map(|s| (name.clone(), s)))
+        .collect::<Result<_, _>>()?;
+
     // Build the mcpServers JSON object with renames applied
     let mut mcp_obj = serde_json::Map::new();
 
@@ -219,8 +307,8 @@ pub(crate) fn write_atomic_inner(
         mcp_obj.insert(k.clone(), v.clone());
     }
 
-    // Add new entries with renames
-    for (name, server) in new_servers {
+    // Add new entries with renames and expanded env vars
+    for (name, server) in &expanded_servers {
         let effective_name = rename_map.get(name).unwrap_or(name).clone();
         let server_value = serde_json::to_value(server)?;
         mcp_obj.insert(effective_name, server_value);
@@ -641,5 +729,61 @@ mod tests {
             "suffixed jig entry must be removed");
         assert!(servers.contains_key("preexisting-server"),
             "pre-existing entry without suffix must survive");
+    }
+
+    // ─── Env var expansion tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_expand_env_var_str_simple() {
+        std::env::set_var("JIG_TEST_VAR_42", "hello");
+        let result = expand_env_var_str("prefix_${JIG_TEST_VAR_42}_suffix").unwrap();
+        assert_eq!(result, "prefix_hello_suffix");
+        std::env::remove_var("JIG_TEST_VAR_42");
+    }
+
+    #[test]
+    fn test_expand_env_var_str_with_default() {
+        std::env::remove_var("JIG_TEST_MISSING_VAR_42");
+        let result = expand_env_var_str("${JIG_TEST_MISSING_VAR_42:-fallback}").unwrap();
+        assert_eq!(result, "fallback");
+    }
+
+    #[test]
+    fn test_expand_env_var_str_unset_no_default_is_error() {
+        std::env::remove_var("JIG_TEST_MISSING_VAR_99");
+        let result = expand_env_var_str("${JIG_TEST_MISSING_VAR_99}");
+        assert!(result.is_err(), "unset var with no default must return Err");
+    }
+
+    #[test]
+    fn test_expand_env_var_str_no_vars_passthrough() {
+        let result = expand_env_var_str("no vars here").unwrap();
+        assert_eq!(result, "no vars here");
+    }
+
+    #[test]
+    fn test_write_atomic_expands_env_vars_in_command() {
+        let (_dir, claude_path, lock_path, state_dir) = temp_mcp_env();
+        let cwd = tempfile::tempdir().unwrap();
+        let canonical_cwd = cwd.path().to_owned();
+
+        std::env::set_var("JIG_MCP_CMD_TEST_42", "expanded-cmd");
+
+        let mut servers = HashMap::new();
+        servers.insert("test-server".to_owned(), McpServer {
+            server_type: Some("stdio".to_owned()),
+            command: Some("${JIG_MCP_CMD_TEST_42}".to_owned()),
+            args: None,
+            env: None,
+            url: None,
+        });
+
+        write_atomic_inner(&servers, &canonical_cwd, 7777, &claude_path, &lock_path, &state_dir).unwrap();
+
+        std::env::remove_var("JIG_MCP_CMD_TEST_42");
+
+        let contents = std::fs::read_to_string(&claude_path).unwrap();
+        assert!(contents.contains("expanded-cmd"), "env var must be expanded before writing to claude.json");
+        assert!(!contents.contains("JIG_MCP_CMD_TEST_42"), "unexpanded var must not appear in claude.json");
     }
 }

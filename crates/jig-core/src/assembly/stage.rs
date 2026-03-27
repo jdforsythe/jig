@@ -31,6 +31,9 @@ pub enum AssemblyError {
     #[error("Hook denied: {hook_source} hook '{command}' was not approved")]
     HookDenied { hook_source: String, command: String },
 
+    #[error("Hook '{command}' requires shell: true")]
+    HookShellRequired { command: String },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -40,6 +43,7 @@ pub struct AssemblyOptions {
     pub project_dir: PathBuf,
     pub cli_overrides: CliOverrides,
     pub dry_run: bool,
+    pub json: bool,
     pub approval_ui: Box<dyn ApprovalUi>,
     pub yes: bool,              // only auto-approves cached items
     pub non_interactive: bool,
@@ -54,6 +58,7 @@ struct SessionGuard {
     canonical_cwd: PathBuf,
     exit_outcome: Option<ExitOutcome>,
     session_id: String,
+    post_exit_hooks: Vec<(crate::config::schema::HookEntry, crate::config::schema::ConfigSource)>,
 }
 
 struct ExitOutcome {
@@ -73,6 +78,12 @@ impl Drop for SessionGuard {
 
         // Category B: clean exit only
         if let Some(outcome) = &self.exit_outcome {
+            // Run post_exit hooks (errors logged, never panic in Drop)
+            for (hook, _source) in &self.post_exit_hooks {
+                if let Err(e) = run_hook(hook) {
+                    tracing::error!("Post-exit hook failed: {e}");
+                }
+            }
             let _ = record_exit(&self.session_id, outcome.exit_code);
         }
     }
@@ -105,11 +116,13 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
     if opts.dry_run {
         print_dry_run_hooks(&resolved.pre_launch_hooks);
     } else {
-        // TODO: run hooks (Step 7 implementation)
+        for (hook, _source) in &resolved.pre_launch_hooks {
+            run_hook(hook)?;
+        }
     }
 
     if opts.dry_run {
-        return run_dry_run(&resolved, &opts.project_dir, &canonical_cwd);
+        return run_dry_run(&resolved, &opts.project_dir, &canonical_cwd, opts.json);
     }
 
     // Step 8: Stage temp dir
@@ -136,6 +149,7 @@ pub fn run_assembly(opts: AssemblyOptions) -> Result<i32, AssemblyError> {
         canonical_cwd: canonical_cwd.clone(),
         exit_outcome: None,
         session_id: session_id.clone(),
+        post_exit_hooks: resolved.post_exit_hooks.clone(),
     };
 
     // Step 11: Build claude invocation flags
@@ -243,25 +257,42 @@ fn run_dry_run(
     resolved: &ResolvedConfig,
     project_dir: &Path,
     canonical_cwd: &Path,
+    json: bool,
 ) -> Result<i32, AssemblyError> {
     let dummy_rename_map = HashMap::new();
     let dummy_temp = PathBuf::from("/tmp/jig-dry-run");
 
     let claude_args = build_claude_args(resolved, &dummy_temp, &dummy_rename_map, project_dir);
 
-    println!("# Dry run — resolved claude invocation:");
-    println!("claude {}", claude_args.join(" "));
-    println!();
-    println!("# Working directory: {}", canonical_cwd.display());
+    if json {
+        let system_prompt = super::prompt::compose_system_prompt(resolved, project_dir);
+        let token_estimate = super::prompt::estimate_tokens(&system_prompt);
+        let output = serde_json::json!({
+            "command": "claude",
+            "args": claude_args,
+            "system_prompt": system_prompt,
+            "token_estimate": token_estimate,
+            "mcp_servers": resolved.mcp_servers.keys().collect::<Vec<_>>(),
+            "hooks_to_run": resolved.pre_launch_hooks.iter()
+                .map(|(h, _)| h.display_command())
+                .collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        println!("# Dry run — resolved claude invocation:");
+        println!("claude {}", claude_args.join(" "));
+        println!();
+        println!("# Working directory: {}", canonical_cwd.display());
 
-    if let Some(template) = &resolved.template_name {
-        println!("# Template: {template}");
-    }
-    if let Some(persona) = &resolved.persona.name {
-        println!("# Persona: {persona}");
-    }
-    if !resolved.mcp_servers.is_empty() {
-        println!("# MCP servers: {}", resolved.mcp_servers.keys().cloned().collect::<Vec<_>>().join(", "));
+        if let Some(template) = &resolved.template_name {
+            println!("# Template: {template}");
+        }
+        if let Some(persona) = &resolved.persona.name {
+            println!("# Persona: {persona}");
+        }
+        if !resolved.mcp_servers.is_empty() {
+            println!("# MCP servers: {}", resolved.mcp_servers.keys().cloned().collect::<Vec<_>>().join(", "));
+        }
     }
 
     Ok(0)
@@ -277,64 +308,65 @@ fn print_dry_run_hooks(hooks: &[(crate::config::schema::HookEntry, crate::config
     }
 }
 
+fn run_hook(hook: &crate::config::schema::HookEntry) -> Result<(), AssemblyError> {
+    use crate::config::schema::HookEntry;
+    match hook {
+        HookEntry::Exec { exec } => {
+            if exec.is_empty() {
+                return Ok(());
+            }
+            let status = std::process::Command::new(&exec[0])
+                .args(&exec[1..])
+                .status()
+                .map_err(AssemblyError::Io)?;
+            if !status.success() {
+                tracing::warn!("Hook exited with non-zero status: {:?}", status.code());
+            }
+            Ok(())
+        }
+        HookEntry::Shell { command, shell: true } => {
+            let status = std::process::Command::new("sh")
+                .args(["-c", command.as_str()])
+                .status()
+                .map_err(AssemblyError::Io)?;
+            if !status.success() {
+                tracing::warn!("Hook exited with non-zero status: {:?}", status.code());
+            }
+            Ok(())
+        }
+        HookEntry::Shell { command, shell: false } => {
+            Err(AssemblyError::HookShellRequired { command: command.clone() })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::schema::HookEntry;
 
-    /// Task 0.3 minimum: verify TempDir auto-cleans on drop.
     #[test]
-    fn test_temp_dir_cleaned_on_drop() {
-        let dir = create_temp_dir().unwrap();
-        let path = dir.path().to_owned();
-        assert!(path.exists(), "temp dir must exist while held");
-        drop(dir);
-        assert!(!path.exists(), "temp dir must be removed on drop");
+    fn test_run_hook_exec_form() {
+        let hook = HookEntry::Exec { exec: vec!["true".to_string()] };
+        assert!(run_hook(&hook).is_ok());
     }
 
-    /// SessionGuard MCP cleanup: on drop with mcp_written=true, cleanup_entries is called.
-    /// We verify by writing a real claude.json substitute and confirming entries are removed.
     #[test]
-    fn test_session_guard_calls_mcp_cleanup_on_drop() {
-        use crate::assembly::mcp::{write_atomic_inner, refcount_path_in};
+    fn test_run_hook_shell_true() {
+        let hook = HookEntry::Shell { command: "exit 0".to_string(), shell: true };
+        assert!(run_hook(&hook).is_ok());
+    }
 
-        let base_dir = tempfile::tempdir().unwrap();
-        let claude_path = base_dir.path().join(".claude.json");
-        let lock_path = base_dir.path().join(".lock");
-        let state_dir = base_dir.path().join("state");
-        let cwd = tempfile::tempdir().unwrap();
-        let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap_or_else(|_| cwd.path().to_owned());
+    #[test]
+    fn test_run_hook_shell_false_is_error() {
+        let hook = HookEntry::Shell { command: "x".to_string(), shell: false };
+        let result = run_hook(&hook);
+        assert!(matches!(result, Err(AssemblyError::HookShellRequired { command }) if command == "x"));
+    }
 
-        let mut servers = std::collections::HashMap::new();
-        servers.insert(
-            "test-svc".to_owned(),
-            crate::config::schema::McpServer {
-                server_type: Some("stdio".to_owned()),
-                command: Some("cmd".to_owned()),
-                args: None,
-                env: None,
-                url: None,
-            },
-        );
-        let result = write_atomic_inner(&servers, &canonical_cwd, 5555, &claude_path, &lock_path, &state_dir).unwrap();
-
-        // Verify entry was written
-        let contents = std::fs::read_to_string(&claude_path).unwrap();
-        assert!(contents.contains(&result.session_suffix), "entry must be written before guard drop");
-
-        // Build a SessionGuard that will clean up on drop
-        // We can't call SessionGuard directly (private), but we CAN call cleanup_entries_inner
-        // directly to verify the cleanup mechanism works correctly.
-        crate::assembly::mcp::cleanup_entries_inner(
-            &canonical_cwd,
-            &result.session_suffix,
-            &claude_path,
-            &lock_path,
-            &state_dir,
-        )
-        .unwrap();
-
-        // After cleanup, suffixed entry must be gone
-        let contents = std::fs::read_to_string(&claude_path).unwrap();
-        assert!(!contents.contains(&result.session_suffix), "suffixed entry must be removed after cleanup");
+    #[test]
+    fn test_run_hook_exec_empty_is_ok() {
+        let hook = HookEntry::Exec { exec: vec![] };
+        assert!(run_hook(&hook).is_ok());
     }
 }

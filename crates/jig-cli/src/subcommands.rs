@@ -15,7 +15,7 @@ pub fn dispatch(cmd: &Commands, cwd: &Path, json: bool) -> Result<(), Box<dyn st
         Commands::Persona(args) => handle_persona(&args.subcommand, json),
         Commands::Skill(args) => handle_skill(&args.subcommand, json),
         Commands::History(args) => handle_history(args.limit, json),
-        Commands::Doctor => handle_doctor(cwd),
+        Commands::Doctor(args) => handle_doctor_to(cwd, args.audit, &mut std::io::stdout()),
         Commands::Config(args) => handle_config(&args.subcommand, cwd, json),
         Commands::Init => handle_init(cwd),
         Commands::Sync(_args) => handle_sync(),
@@ -161,23 +161,28 @@ fn handle_history(limit: usize, json: bool) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-fn handle_doctor(_cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    println!("jig doctor — checking system state...");
+/// Writer-based doctor implementation — testable without stdout capture.
+pub(crate) fn handle_doctor_to<W: std::io::Write>(
+    cwd: &Path,
+    audit: bool,
+    out: &mut W,
+) -> Result<(), Box<dyn std::error::Error>> {
+    writeln!(out, "jig doctor — checking system state...")?;
 
     // Check claude binary
     if jig_core::assembly::executor::find_claude_binary().is_some() {
-        println!("  ✓ claude binary found");
+        writeln!(out, "  ✓ claude binary found")?;
     } else {
-        println!("  ✗ claude binary not found in PATH");
-        println!("    Install claude: https://claude.ai/download");
+        writeln!(out, "  ✗ claude binary not found in PATH")?;
+        writeln!(out, "    Install claude: https://claude.ai/download")?;
     }
 
     // Check ~/.claude.json
     let claude_path = jig_core::assembly::mcp::claude_json_path();
     if claude_path.exists() {
-        println!("  ✓ ~/.claude.json exists");
+        writeln!(out, "  ✓ ~/.claude.json exists")?;
     } else {
-        println!("  ! ~/.claude.json not found (will be created on first MCP write)");
+        writeln!(out, "  ! ~/.claude.json not found (will be created on first MCP write)")?;
     }
 
     // Check history
@@ -186,12 +191,88 @@ fn handle_doctor(_cwd: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let lines = std::fs::read_to_string(&history_path)
             .map(|c| c.lines().count())
             .unwrap_or(0);
-        println!("  ✓ history.jsonl exists ({lines} entries)");
+        writeln!(out, "  ✓ history.jsonl exists ({lines} entries)")?;
     } else {
-        println!("  ! history.jsonl not found (created on first launch)");
+        writeln!(out, "  ! history.jsonl not found (created on first launch)")?;
     }
 
-    println!("Done.");
+    writeln!(out, "Done.")?;
+
+    if audit {
+        writeln!(out, "")?;
+        writeln!(out, "jig doctor --audit — running security checks...")?;
+
+        // Check global config file permissions (Unix only)
+        let global_config = home::home_dir()
+            .unwrap_or_default()
+            .join(".config")
+            .join("jig")
+            .join("config.yaml");
+
+        #[cfg(unix)]
+        if global_config.exists() {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&global_config)?;
+            let mode = meta.permissions().mode() & 0o777;
+            if mode == 0o600 || mode == 0o640 {
+                writeln!(out, "  ✓ global config permissions: {:o} (ok)", mode)?;
+            } else {
+                writeln!(out, "  ! global config permissions: {:o} (expected 0600 or 0640)", mode)?;
+                writeln!(out, "    Run: chmod 600 {}", global_config.display())?;
+            }
+        } else {
+            writeln!(out, "  - global config does not exist (ok — no permissions to check)")?;
+        }
+
+        // Check config schema validity
+        if global_config.exists() {
+            match std::fs::read_to_string(&global_config)
+                .and_then(|s| serde_yaml::from_str::<jig_core::config::schema::JigConfig>(&s)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+            {
+                Ok(cfg) => {
+                    writeln!(out, "  ✓ global config parses as valid YAML")?;
+                    if let Some(v) = cfg.schema {
+                        writeln!(out, "  ✓ schema version: {v}")?;
+                    }
+                }
+                Err(e) => {
+                    writeln!(out, "  ✗ global config parse error: {e}")?;
+                }
+            }
+        }
+
+        // Check project config if present
+        let project_config = cwd.join(".jig.yaml");
+        if project_config.exists() {
+            match std::fs::read_to_string(&project_config)
+                .and_then(|s| serde_yaml::from_str::<jig_core::config::schema::JigConfig>(&s)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+            {
+                Ok(_) => writeln!(out, "  ✓ .jig.yaml parses as valid YAML")?,
+                Err(e) => writeln!(out, "  ✗ .jig.yaml parse error: {e}")?,
+            }
+        }
+
+        // Check for .jig.local.yaml
+        let local_config = cwd.join(".jig.local.yaml");
+        if local_config.exists() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let meta = std::fs::metadata(&local_config)?;
+                let mode = meta.permissions().mode() & 0o777;
+                if mode == 0o600 || mode == 0o640 {
+                    writeln!(out, "  ✓ .jig.local.yaml permissions: {:o} (ok)", mode)?;
+                } else {
+                    writeln!(out, "  ! .jig.local.yaml permissions: {:o} (consider chmod 600 for security)", mode)?;
+                }
+            }
+        }
+
+        writeln!(out, "Audit complete.")?;
+    }
+
     Ok(())
 }
 
@@ -407,41 +488,6 @@ pub(crate) fn handle_init(cwd: &Path) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Writer-based doctor implementation — testable without stdout capture.
-pub(crate) fn handle_doctor_to<W: std::io::Write>(
-    _cwd: &std::path::Path,
-    out: &mut W,
-) -> Result<(), Box<dyn std::error::Error>> {
-    writeln!(out, "jig doctor — checking system state...")?;
-
-    if jig_core::assembly::executor::find_claude_binary().is_some() {
-        writeln!(out, "  ✓ claude binary found")?;
-    } else {
-        writeln!(out, "  ✗ claude binary not found in PATH")?;
-        writeln!(out, "    Install claude: https://claude.ai/download")?;
-    }
-
-    let claude_path = jig_core::assembly::mcp::claude_json_path();
-    if claude_path.exists() {
-        writeln!(out, "  ✓ ~/.claude.json exists")?;
-    } else {
-        writeln!(out, "  ! ~/.claude.json not found (will be created on first MCP write)")?;
-    }
-
-    let history_path = jig_core::history::history_path();
-    if history_path.exists() {
-        let lines = std::fs::read_to_string(&history_path)
-            .map(|c| c.lines().count())
-            .unwrap_or(0);
-        writeln!(out, "  ✓ history.jsonl exists ({lines} entries)")?;
-    } else {
-        writeln!(out, "  ! history.jsonl not found (created on first launch)")?;
-    }
-
-    writeln!(out, "Done.")?;
-    Ok(())
-}
-
 fn handle_sync() -> Result<(), Box<dyn std::error::Error>> {
     println!("jig sync — not yet implemented.");
     Ok(())
@@ -513,7 +559,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::<u8>::new();
-        handle_doctor_to(dir.path(), &mut out).unwrap();
+        handle_doctor_to(dir.path(), false, &mut out).unwrap();
         std::env::set_var("PATH", &original_path);
 
         let output = String::from_utf8(out).unwrap();
@@ -521,5 +567,26 @@ mod tests {
             output.contains("not found in PATH"),
             "doctor must report missing claude binary, got: {output}"
         );
+    }
+
+    #[test]
+    fn test_handle_doctor_audit_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut out = Vec::<u8>::new();
+        handle_doctor_to(dir.path(), true, &mut out).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("audit"),
+            "doctor --audit must include audit output, got: {output}"
+        );
+    }
+
+    #[test]
+    fn test_handle_doctor_no_audit_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut out = Vec::<u8>::new();
+        handle_doctor_to(dir.path(), false, &mut out).unwrap();
+        let output = String::from_utf8(out).unwrap();
+        assert!(!output.contains("security checks"), "doctor without --audit must not show audit section");
     }
 }

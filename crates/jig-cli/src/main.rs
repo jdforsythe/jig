@@ -49,12 +49,6 @@ fn main() -> miette::Result<()> {
 fn run_launch(cli: Cli, cwd: &std::path::Path) -> miette::Result<()> {
     use jig_core::history::last_session;
 
-    let _overrides = CliOverrides {
-        template: cli.template.clone(),
-        persona: cli.persona.clone(),
-        model: None,
-    };
-
     // Determine if TUI should open
     let use_tui = !cli.go && !cli.dry_run && !cli.last && !cli.resume && cli.template.is_none();
 
@@ -63,7 +57,12 @@ fn run_launch(cli: Cli, cwd: &std::path::Path) -> miette::Result<()> {
         {
             use jig_tui::app::run_tui;
             match run_tui().map_err(|e| miette::miette!("{}", e))? {
-                Some((t, p)) => (Some(t), Some(p)),
+                Some((t, p)) => {
+                    // Convert "None" sentinel values from TUI to actual None
+                    let effective_template = if t == "None (no template)" { None } else { Some(t) };
+                    let effective_persona = if p == "None (no persona)" { None } else { Some(p) };
+                    (effective_template, effective_persona)
+                }
                 None => return Ok(()), // User quit without selecting
             }
         }
@@ -98,6 +97,7 @@ fn run_launch(cli: Cli, cwd: &std::path::Path) -> miette::Result<()> {
         project_dir: cwd.to_owned(),
         cli_overrides: effective_overrides,
         dry_run: cli.dry_run,
+        json: cli.json,
         approval_ui,
         yes: cli.yes,
         non_interactive: cli.non_interactive,
