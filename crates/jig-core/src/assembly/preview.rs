@@ -77,3 +77,80 @@ pub fn build_preview_data(resolved: &ResolvedConfig, project_dir: &Path) -> Prev
         persona_name: resolved.persona.name.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_preview_empty_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let overrides = CliOverrides::default();
+        let preview = compute_preview(dir.path(), &overrides).unwrap();
+        assert_eq!(preview.token_count, 0);
+        assert!(preview.system_prompt_lines.is_empty());
+        assert!(preview.template_name.is_none());
+    }
+
+    #[test]
+    fn test_compute_preview_with_template_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let overrides = CliOverrides {
+            template: Some("code-review".to_owned()),
+            ..Default::default()
+        };
+        let preview = compute_preview(dir.path(), &overrides).unwrap();
+        assert_eq!(preview.template_name.as_deref(), Some("code-review"));
+        // code-review has allowed/disallowed tools → non-empty permissions
+        assert!(!preview.permissions_summary.is_empty());
+    }
+
+    #[test]
+    fn test_compute_preview_with_persona_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".jig.yaml"),
+            "schema: 1\npersona:\n  name: tester\n  rules:\n    - Be precise and thorough\n",
+        ).unwrap();
+        let overrides = CliOverrides::default();
+        let preview = compute_preview(dir.path(), &overrides).unwrap();
+        assert!(
+            preview.system_prompt_lines.iter().any(|l| l.contains("Be precise")),
+            "system_prompt_lines must contain persona rule text"
+        );
+        assert!(preview.token_count > 0, "persona rules must produce non-zero token count");
+    }
+
+    #[test]
+    fn test_compute_preview_with_context_fragments() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("context.md"), "Important project context here.").unwrap();
+        std::fs::write(
+            dir.path().join(".jig.yaml"),
+            "schema: 1\ncontext:\n  fragments:\n    - path: context.md\n      description: Project context\n",
+        ).unwrap();
+        let overrides = CliOverrides::default();
+        let preview = compute_preview(dir.path(), &overrides).unwrap();
+        assert!(
+            preview.system_prompt_lines.iter().any(|l| l.contains("Important project context")),
+            "system_prompt_lines must include context fragment content"
+        );
+        assert!(preview.token_count > 0);
+    }
+
+    #[test]
+    fn test_build_preview_data_token_count_matches_heuristic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".jig.yaml"),
+            "schema: 1\npersona:\n  name: test\n  rules:\n    - A rule with exactly known length for testing\n",
+        ).unwrap();
+        let overrides = CliOverrides::default();
+        let resolved = resolve_config(dir.path(), &overrides).unwrap();
+        let preview = build_preview_data(&resolved, dir.path());
+        // Token count should be system_prompt length / 4
+        let prompt = super::super::prompt::compose_system_prompt(&resolved, dir.path());
+        let expected = prompt.len() / 4;
+        assert_eq!(preview.token_count, expected, "token count must match chars/4 heuristic");
+    }
+}

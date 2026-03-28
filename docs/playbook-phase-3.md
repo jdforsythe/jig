@@ -6,16 +6,29 @@ A step-by-step guide for manually verifying all features implemented across Phas
 
 ## Prerequisites
 
+All tests run from a **temporary project directory** (not the jig source tree) to avoid
+git-worktree detection issues and to prevent test configs from polluting the repo.
+
 ```bash
-# Build the full binary (with TUI)
+# Build the full binary (with TUI) from the jig source directory
 cargo build --workspace
 
-# Alias for convenience
-alias jig="./target/debug/jig"
+# Record the absolute path to the built binary
+JIG_BIN="$(pwd)/target/debug/jig"
+
+# Create a fresh, isolated test project
+export JIG_TEST_DIR=$(mktemp -d /tmp/jig-playbook-XXXX)
+cd "$JIG_TEST_DIR"
+git init   # jig expects a git repo for worktree/config detection
+
+# Alias using the absolute path so it works from the temp directory
+alias jig="$JIG_BIN"
 
 # Verify binary exists and responds
 jig --version
 ```
+
+> **Cleanup:** When done testing, run `rm -rf "$JIG_TEST_DIR"` to remove the temp project.
 
 ---
 
@@ -32,16 +45,19 @@ jig
 ### 1.2 Template selection via CLI
 
 ```bash
-jig -t code-review
+jig -t code-review --dry-run
 ```
 
-**Expected:** Launches Claude with the `code-review` template applied.
+**Expected:** Dry-run output showing the resolved command with `code-review` template applied.
 
 ### 1.3 Headless binary (no TUI)
 
 ```bash
+# Run from the jig source directory for this step only
+cd "$(dirname "$JIG_BIN")/../.."
 cargo build --no-default-features -p jig-cli
-./target/debug/jig -t code-review --dry-run --json
+cd "$JIG_TEST_DIR"
+"$(dirname "$JIG_BIN")/jig" -t code-review --dry-run --json
 ```
 
 **Expected:** JSON output with `command`, `args`, `system_prompt`, `token_estimate`, `mcp_servers`, `hooks_to_run`. No panic.
@@ -49,8 +65,10 @@ cargo build --no-default-features -p jig-cli
 ### 1.4 Headless binary size gate
 
 ```bash
+cd "$(dirname "$JIG_BIN")/../.."
 cargo build --profile release-headless --no-default-features -p jig-cli
 ls -lh target/release-headless/jig
+cd "$JIG_TEST_DIR"
 ```
 
 **Expected:** File size under 5 MB.
@@ -58,6 +76,8 @@ ls -lh target/release-headless/jig
 ---
 
 ## 2. Phase 2 Features
+
+> All section 2 tests should be run from `$JIG_TEST_DIR` (the temp project created in Prerequisites).
 
 ### 2.1 "None" options in TUI
 
@@ -67,53 +87,105 @@ jig
 
 **Expected:** First template entry is `None (no template)`. First persona entry is `None (no persona)`. Selecting None for template skips template config overlay. Selecting None for persona omits `--append-system-prompt-file`.
 
-Verify via dry-run: `jig --dry-run --json` with no template selected should produce a minimal command without `--append-system-prompt-file`.
+Verify via dry-run:
+```bash
+jig --dry-run --json
+```
+
+**Expected:** Minimal JSON output without `--append-system-prompt-file` in `args`.
 
 ### 2.2 Config precedence
 
 ```bash
-# Template sets model to opus, CLI overrides to sonnet
-jig -t code-review --model claude-sonnet-4-5 --dry-run --json | jq .args
+# Template sets model — CLI --model overrides it
+jig -t code-review --model claude-sonnet-4-5 --dry-run --json | jq '.args'
 ```
 
-**Expected:** `args` array contains `--model claude-sonnet-4-5` (CLI flag wins over template config).
+**Expected:** `args` array contains `--model`, `claude-sonnet-4-5` (CLI flag wins over template config).
+
+Now verify config layering — local config overrides project config:
+
+```bash
+cat > .jig.yaml << 'EOF'
+schema: 1
+profile:
+  settings:
+    model: claude-sonnet-4-5
+EOF
+
+cat > .jig.local.yaml << 'EOF'
+schema: 1
+profile:
+  settings:
+    model: claude-opus-4-5
+EOF
+
+jig --dry-run --json | jq '.args'
+```
+
+**Expected:** `args` array contains `--model`, `claude-opus-4-5` (local wins over project).
+
+CLI flag wins over both:
+
+```bash
+jig --model claude-haiku-4-5 --dry-run --json | jq '.args'
+```
+
+**Expected:** `args` array contains `--model`, `claude-haiku-4-5` (CLI wins over local and project).
+
+```bash
+rm -f .jig.yaml .jig.local.yaml
+```
 
 ### 2.3 Env var expansion in MCP
 
-Create `.jig.yaml`:
-```yaml
-mcp_servers:
-  my-tool:
-    command: npx
-    args: ["-y", "@my/tool"]
-    env:
-      API_KEY: "${MY_API_KEY}"
-      ENDPOINT: "${BASE_URL:-https://default.example.com}"
-```
-
 ```bash
+cat > .jig.yaml << 'EOF'
+schema: 1
+profile:
+  mcp:
+    my-tool:
+      command: npx
+      args: ["-y", "@my/tool"]
+      env:
+        API_KEY: "${MY_API_KEY}"
+        ENDPOINT: "${BASE_URL:-https://default.example.com}"
+EOF
+
 export MY_API_KEY=secret123
 jig --dry-run --json | jq '.mcp_servers'
 ```
 
-**Expected:** `API_KEY` is `secret123`, `ENDPOINT` is `https://default.example.com` (default applied). In dry-run output, values are masked as `***`.
+**Expected:** In dry-run JSON: `API_KEY` shows `***` (credential masking) and `ENDPOINT` shows the raw `${BASE_URL:-...}` template (env vars are expanded at MCP write time, not during dry-run). When launched for real, env vars are expanded: `API_KEY` becomes `secret123`, `ENDPOINT` becomes `https://default.example.com` (default applied since `BASE_URL` is unset).
+
+```bash
+rm -f .jig.yaml
+unset MY_API_KEY
+```
 
 ### 2.4 Hook execution
 
-Create `.jig.yaml`:
-```yaml
-pre_launch_hooks:
-  - exec: [echo, "pre-launch hook fired"]
-post_exit_hooks:
-  - command: "echo post-exit hook fired"
-    shell: true
+```bash
+cat > .jig.yaml << 'EOF'
+schema: 1
+hooks:
+  pre_launch:
+    - exec: [echo, "pre-launch hook fired"]
+  post_exit:
+    - command: "echo post-exit hook fired"
+      shell: true
+EOF
+
+jig --dry-run --json
 ```
+
+**Expected:** Output includes `"hooks_to_run"` array listing the hook commands. Note: a `# Hooks that would run:` text block is printed before the JSON — this is a known issue where hook debug output goes to stdout instead of stderr.
+
+When launched for real (without `--dry-run`), `pre-launch hook fired` prints before Claude starts; `post-exit hook fired` prints after Claude exits.
 
 ```bash
-jig --dry-run --json | jq .hooks_to_run
+rm -f .jig.yaml
 ```
-
-**Expected:** Hooks listed in output. When launched for real, `pre-launch hook fired` prints before Claude starts; `post-exit hook fired` prints after Claude exits.
 
 ### 2.5 Session history
 
@@ -122,18 +194,17 @@ jig --dry-run --json | jq .hooks_to_run
 jig history
 jig history --limit 5
 jig history --verbose
-jig history --json
 ```
 
-**Expected:** History entries with session ID, template, persona, CWD, duration, exit code. `--verbose` adds persona and exit code columns. `--json` outputs JSON array.
+**Expected:** History entries with session ID, template, persona, CWD, duration. `--verbose` adds persona and exit code columns. If no history exists yet, a "no history" message is shown.
 
 ### 2.6 Session relaunching
 
 ```bash
-jig --last          # relaunch most recent session
+jig --last              # relaunch most recent session
 jig --last -p strict-security   # relaunch with different persona
-jig --session <UUID>   # relaunch specific session by ID
-jig --resume        # relaunch and pass --resume to Claude
+jig --session <UUID>    # relaunch specific session by ID
+jig --resume            # relaunch and pass --resume to Claude
 ```
 
 **Expected:** Each reuses the config from the original session (template, model, MCP, skills). `--last -p P` overrides the persona.
@@ -150,9 +221,11 @@ jig
 ### 2.8 `jig config` commands
 
 ```bash
-# Create a test config
 cat > .jig.yaml << 'EOF'
-model: claude-sonnet-4-5
+schema: 1
+profile:
+  settings:
+    model: claude-sonnet-4-5
 EOF
 
 jig config show
@@ -163,6 +236,8 @@ jig config show | grep model
 
 jig config add allowed_tools Read --scope project
 jig config remove allowed_tools Read --scope project
+
+rm -f .jig.yaml
 ```
 
 **Expected:** `show` displays resolved config with provenance. `set` modifies the YAML file at the target scope. `add`/`remove` modify list fields.
@@ -172,6 +247,7 @@ jig config remove allowed_tools Read --scope project
 ```bash
 jig import --dry-run
 jig import
+rm -f .jig.yaml
 ```
 
 **Expected:** Dry-run outputs what would be written to `.jig.yaml` with credentials masked. Real import writes `.jig.yaml` with MCP servers from `~/.claude.json` for the current directory.
@@ -179,33 +255,50 @@ jig import
 ### 2.10 `jig diff`
 
 ```bash
-cat > /tmp/test-config.yaml << 'EOF'
-model: claude-opus-4-5
+cat > .jig.yaml << 'EOF'
+schema: 1
+profile:
+  settings:
+    model: claude-sonnet-4-5
 EOF
+
+cat > /tmp/test-config.yaml << 'EOF'
+schema: 1
+profile:
+  settings:
+    model: claude-opus-4-5
+EOF
+
 jig diff /tmp/test-config.yaml
+rm -f .jig.yaml /tmp/test-config.yaml
 ```
 
 **Expected:** Unified diff showing differences between current resolved config and the target file.
 
 ### 2.11 `extends` resolution
 
-Create `base.yaml`:
-```yaml
-model: claude-sonnet-4-5
-allowed_tools: [Read, Write]
-```
-
-Create `.jig.yaml`:
-```yaml
-extends: [./base.yaml]
-allowed_tools: [Edit]
-```
-
 ```bash
-jig config show | grep -A5 allowed_tools
+cat > base.yaml << 'EOF'
+schema: 1
+profile:
+  settings:
+    model: claude-sonnet-4-5
+    allowedTools: [Read, Write]
+EOF
+
+cat > .jig.yaml << 'EOF'
+schema: 1
+extends: [./base.yaml]
+profile:
+  settings:
+    allowedTools: [Edit]
+EOF
+
+jig config show | grep -A5 allowed
+rm -f .jig.yaml base.yaml
 ```
 
-**Expected:** `allowed_tools` is the union `[Read, Write, Edit]`.
+**Expected:** `allowedTools` is the union `[Read, Write, Edit]`.
 
 ### 2.12 `jig doctor`
 
@@ -379,20 +472,25 @@ grep -A20 'package.metadata.binstall' crates/jig-cli/Cargo.toml
 
 ### 5.1 Source config in YAML
 
-Create `.jig.yaml`:
-```yaml
-sources:
-  my-skills:
-    url: https://github.com/example/skills-repo
-    path: skills
-    rev: main
-```
-
 ```bash
+cat > .jig.yaml << 'EOF'
+schema: 1
+profile:
+  sources:
+    my-skills:
+      url: https://github.com/example/skills-repo
+      path: skills
+      rev: main
+EOF
+
 jig config show --json | jq .sources
 ```
 
 **Expected:** Sources field present in resolved config output.
+
+```bash
+rm -f .jig.yaml
+```
 
 ### 5.2 `jig sync`
 
@@ -493,15 +591,16 @@ jig skill info my-skills some-skill
 
 ### 5.12 Source skill resolution in assembly
 
-With skills from source configured in `.jig.yaml`:
-```yaml
-skills:
-  from_source:
-    my-skills: [some-skill]
-```
-
 ```bash
-jig --dry-run --json | jq .args
+cat > .jig.yaml << 'EOF'
+schema: 1
+profile:
+  skills:
+    from_source:
+      my-skills: [some-skill]
+EOF
+
+jig --dry-run --json | jq '.args'
 ```
 
 **Expected:** `--add-dir` argument in the args with the path to the staged skills temp directory containing a symlink to `some-skill.md`.
@@ -541,9 +640,11 @@ jig skill list --source test-source
 
 ### 6.1 New project setup with skills
 
+> These E2E scenarios can use `$JIG_TEST_DIR` if it still exists, or create a new temp dir.
+
 ```bash
-mkdir /tmp/jig-e2e-test && cd /tmp/jig-e2e-test
-git init
+cd "$JIG_TEST_DIR"
+rm -f .jig.yaml .jig.local.yaml   # start fresh
 
 # Initialize config
 jig init
@@ -604,11 +705,11 @@ These verify known bugs from earlier phases don't regress.
 
 Verify that MCP cwd lookup uses direct map navigation:
 ```bash
-cd /private/tmp/some/path
-jig --dry-run --json | jq .mcp_servers
+cd "$JIG_TEST_DIR"
+jig --dry-run --json | jq '.mcp_servers'
 ```
 
-**Expected:** No panic from JSON Pointer path separator issue. MCP servers from `~/.claude.json` for this CWD are correctly loaded.
+**Expected:** No panic from JSON Pointer path separator issue. MCP servers from `~/.claude.json` for this CWD are correctly loaded (likely empty for the temp dir, which is fine — the point is no panic).
 
 ### 7.2 Process group hang (Phase 1)
 
@@ -649,15 +750,24 @@ cat ~/.claude.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(
 ## 8. Automated Test Suite
 
 ```bash
+# Run from the jig source directory
+cd "$(dirname "$JIG_BIN")/../.."
+
 # Run all tests
 cargo test --workspace
 
 # Run with git integration tests (requires network)
 JIG_RUN_GIT_TESTS=1 cargo test --workspace
 
-# Expected output at Phase 3 completion:
-# jig-cli: 18 tests, 0 failed
-# jig-core: 143 tests, 0 failed, 1 ignored (git integration)
-# jig-tui: 36 tests, 0 failed
-# Total: 197 tests, 0 failed
+# Expected output:
+# jig-cli: 20 tests, 0 failed
+# jig-core: 148 tests, 0 failed, 1 ignored (git integration)
+# jig-tui: 64 tests, 0 failed
+# Total: 232 tests, 0 failed
+```
+
+## 9. Cleanup
+
+```bash
+rm -rf "$JIG_TEST_DIR"
 ```

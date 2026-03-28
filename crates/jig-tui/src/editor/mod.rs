@@ -756,4 +756,55 @@ mod tests {
 
         assert_eq!(state.section, EditorSection::ALL[1]);
     }
+
+    // ── P2: Editor preview contract tests ───────────────────────
+
+    #[test]
+    fn test_editor_preview_populated_on_init() {
+        // EditorState::new() calls refresh_preview() in its constructor
+        let mut draft = EditorDraft::default();
+        draft.persona_name = Some("test".to_owned());
+        draft.persona_rules = vec!["Rule one".to_owned()];
+        let state = EditorState::new(draft, EditorEntryPoint::CustomAdHoc);
+        assert!(
+            !state.preview_lines.is_empty(),
+            "EditorState constructor must populate preview_lines via refresh_preview"
+        );
+        assert!(
+            state.preview_token_count > 0,
+            "EditorState constructor must populate token count for draft with persona rules"
+        );
+    }
+
+    #[test]
+    fn test_editor_preview_updates_after_adding_rule() {
+        let draft = EditorDraft::default();
+        let mut state = EditorState::new(draft, EditorEntryPoint::CustomAdHoc);
+        let initial_count = state.preview_token_count;
+
+        // Directly add a persona rule and refresh (simulating the effect of 'a' key + input)
+        state.draft.persona_rules.push("A new test rule for preview".to_owned());
+        state.refresh_preview();
+
+        assert!(
+            state.preview_token_count > initial_count,
+            "preview_token_count must increase after adding a persona rule"
+        );
+    }
+
+    #[test]
+    fn test_editor_debounce_100ms() {
+        let draft = EditorDraft::default();
+        let state = EditorState::new(draft, EditorEntryPoint::CustomAdHoc);
+        // Constructor just called refresh_preview, so last_preview_update is fresh
+        assert!(
+            !state.should_update_preview(),
+            "should_update_preview must be false immediately after init"
+        );
+        std::thread::sleep(Duration::from_millis(110));
+        assert!(
+            state.should_update_preview(),
+            "should_update_preview must be true after 110ms"
+        );
+    }
 }

@@ -2,6 +2,7 @@
 ///
 /// Decision (brainstorm §4): TUI shows on bare `jig`. Two-pane layout.
 use std::io;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -10,6 +11,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     cursor,
 };
+use jig_core::config::resolve::CliOverrides;
 use jig_core::defaults::builtin_templates;
 use ratatui::{
     Terminal,
@@ -75,6 +77,7 @@ pub struct App {
     pub should_quit: bool,
     pub launch_selection: Option<(String, String)>, // (template, persona)
     last_preview_update: Instant,
+    pub project_dir: PathBuf,
     pub history_lines: Vec<String>,
     pub history_scroll: u16,
     pub editor_state: Option<crate::editor::EditorState>,
@@ -88,6 +91,10 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
+        Self::with_project_dir(std::env::current_dir().unwrap_or_default())
+    }
+
+    pub fn with_project_dir(project_dir: PathBuf) -> Self {
         let mut template_names: Vec<String> = vec!["None (no template)".to_owned()];
         template_names.insert(1, "[Custom / ad-hoc]".to_owned());
         template_names.extend(builtin_templates().into_iter().map(|t| t.name));
@@ -106,7 +113,7 @@ impl App {
             "performance".to_owned(),
         ];
 
-        Self {
+        let mut app = Self {
             templates: FilterableListState::new(template_names),
             personas: FilterableListState::new(persona_names),
             focus: PaneFocus::Templates,
@@ -119,11 +126,14 @@ impl App {
             show_preview: true,
             should_quit: false,
             launch_selection: None,
-            last_preview_update: Instant::now(),
+            last_preview_update: Instant::now() - Duration::from_secs(1),
+            project_dir,
             history_lines: Vec::new(),
             history_scroll: 0,
             editor_state: None,
-        }
+        };
+        app.refresh_preview();
+        app
     }
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
@@ -333,6 +343,55 @@ impl App {
     pub fn set_preview(&mut self, markdown: &str, token_count: usize) {
         self.preview_lines = markdown_to_lines(markdown);
         self.preview_token_count = token_count;
+        self.preview_scroll = 0;
+    }
+
+    /// Computes and sets preview content based on current template/persona selection.
+    pub fn refresh_preview(&mut self) {
+        let template = self.templates.selected_item().unwrap_or("None (no template)");
+        let persona = self.personas.selected_item().unwrap_or("None (no persona)");
+
+        let overrides = CliOverrides {
+            template: if template == "None (no template)" || template == "[Custom / ad-hoc]" {
+                None
+            } else {
+                Some(template.to_owned())
+            },
+            persona: if persona == "None (no persona)" {
+                None
+            } else {
+                Some(persona.to_owned())
+            },
+            model: None,
+        };
+
+        match jig_core::assembly::preview::compute_preview(&self.project_dir, &overrides) {
+            Ok(preview) => {
+                let mut md = String::new();
+                if let Some(name) = &preview.template_name {
+                    if !name.is_empty() {
+                        md.push_str(&format!("# Template: {name}\n\n"));
+                    }
+                }
+                if let Some(name) = &preview.persona_name {
+                    md.push_str(&format!("**Persona:** {name}\n\n"));
+                }
+                if !preview.permissions_summary.is_empty() {
+                    md.push_str(&format!("**Permissions:** {}\n\n", preview.permissions_summary));
+                }
+                if !preview.system_prompt_lines.is_empty() {
+                    md.push_str("---\n\n");
+                    for line in &preview.system_prompt_lines {
+                        md.push_str(&format!("{line}\n"));
+                    }
+                }
+                self.set_preview(&md, preview.token_count);
+            }
+            Err(_) => {
+                self.set_preview("*Preview unavailable*", 0);
+            }
+        }
+        self.last_preview_update = Instant::now();
     }
 }
 
@@ -395,6 +454,11 @@ pub fn run_tui() -> io::Result<Option<(String, String)>> {
                 }
                 _ => {}
             }
+        }
+
+        // Refresh preview after debounce period elapses following a selection change
+        if app.should_update_preview() {
+            app.refresh_preview();
         }
 
         if app.should_quit {
@@ -549,6 +613,68 @@ fn render_single_pane_lists(frame: &mut ratatui::Frame, app: &mut App, area: Rec
     frame.render_stateful_widget(persona_widget, chunks[1], &mut app.personas);
 }
 
+fn render_history(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
+    let theme = active_theme();
+    let lines: Vec<Line> = app
+        .history_lines
+        .iter()
+        .map(|l| Line::from(l.clone()))
+        .collect();
+
+    let total = lines.len() as u16;
+    let max_scroll = total.saturating_sub(area.height.saturating_sub(2));
+    app.history_scroll = app.history_scroll.min(max_scroll);
+
+    let para = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(" Session History (Esc/h to close, j/k to scroll) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border_focused)),
+        )
+        .scroll((app.history_scroll, 0));
+
+    frame.render_widget(para, area);
+}
+
+fn render_which_key(frame: &mut ratatui::Frame, area: Rect) {
+    use ratatui::widgets::Clear;
+
+    let popup_width = 50u16.min(area.width.saturating_sub(4));
+    let popup_height = 15u16.min(area.height.saturating_sub(4));
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    frame.render_widget(Clear, popup_area);
+
+    let keybindings = vec![
+        Line::from(" Key Bindings"),
+        Line::from("─────────────────────────"),
+        Line::from(" j/k    Navigate list"),
+        Line::from(" Tab    Switch pane focus"),
+        Line::from(" /      Filter mode"),
+        Line::from(" Enter  Launch session"),
+        Line::from(" h      Session history"),
+        Line::from(" L      Relaunch last session"),
+        Line::from(" p      Toggle preview"),
+        Line::from(" d/D    Scroll preview ↓"),
+        Line::from(" u/U    Scroll preview ↑"),
+        Line::from(" ?      This help"),
+        Line::from(" q/Esc  Quit"),
+    ];
+
+    let popup = Paragraph::new(keybindings)
+        .block(Block::default().borders(Borders::ALL).title(" Help "));
+    frame.render_widget(popup, popup_area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,6 +688,44 @@ mod tests {
             state: crossterm::event::KeyEventState::empty(),
         });
     }
+
+    /// Creates an App backed by a temporary directory for preview tests.
+    fn app_with_tempdir(dir: &std::path::Path) -> App {
+        App::with_project_dir(dir.to_path_buf())
+    }
+
+    /// Navigate template selection to the given name.
+    fn navigate_to_template(app: &mut App, target: &str) {
+        app.focus = PaneFocus::Templates;
+        // Reset to top
+        for _ in 0..app.templates.items.len() {
+            press(app, KeyCode::Char('k'));
+        }
+        for _ in 0..app.templates.items.len() {
+            if app.templates.selected_item() == Some(target) {
+                return;
+            }
+            press(app, KeyCode::Char('j'));
+        }
+        panic!("Template '{}' not found in list", target);
+    }
+
+    /// Navigate persona selection to the given name.
+    fn navigate_to_persona(app: &mut App, target: &str) {
+        app.focus = PaneFocus::Personas;
+        for _ in 0..app.personas.items.len() {
+            press(app, KeyCode::Char('k'));
+        }
+        for _ in 0..app.personas.items.len() {
+            if app.personas.selected_item() == Some(target) {
+                return;
+            }
+            press(app, KeyCode::Char('j'));
+        }
+        panic!("Persona '{}' not found in list", target);
+    }
+
+    // ── Existing tests ──────────────────────────────────────────
 
     #[test]
     fn test_template_list_starts_with_none() {
@@ -684,66 +848,240 @@ mod tests {
             "editor_state must remain None when e is pressed on None"
         );
     }
-}
 
-fn render_history(frame: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    let theme = active_theme();
-    let lines: Vec<Line> = app
-        .history_lines
-        .iter()
-        .map(|l| Line::from(l.clone()))
-        .collect();
+    // ── P0: Preview update tests (would have caught the bug) ────
 
-    let total = lines.len() as u16;
-    let max_scroll = total.saturating_sub(area.height.saturating_sub(2));
-    app.history_scroll = app.history_scroll.min(max_scroll);
+    #[test]
+    fn test_set_preview_populates_lines_and_token_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_tempdir(dir.path());
+        app.set_preview("# Hello\n\nSome text here", 42);
+        assert!(!app.preview_lines.is_empty(), "set_preview must populate preview_lines");
+        assert_eq!(app.preview_token_count, 42);
+    }
 
-    let para = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .title(" Session History (Esc/h to close, j/k to scroll) ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.border_focused)),
-        )
-        .scroll((app.history_scroll, 0));
+    #[test]
+    fn test_set_preview_resets_scroll() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_tempdir(dir.path());
+        app.preview_scroll = 10;
+        app.set_preview("# Hello", 5);
+        assert_eq!(app.preview_scroll, 0, "set_preview must reset scroll to 0");
+    }
 
-    frame.render_widget(para, area);
-}
+    #[test]
+    fn test_preview_debounce_timing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_tempdir(dir.path());
+        // Simulate a j press which sets last_preview_update to now
+        press(&mut app, KeyCode::Char('j'));
+        assert!(
+            !app.should_update_preview(),
+            "should_update_preview must be false immediately after keypress"
+        );
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(
+            app.should_update_preview(),
+            "should_update_preview must be true after debounce period"
+        );
+    }
 
-fn render_which_key(frame: &mut ratatui::Frame, area: Rect) {
-    use ratatui::widgets::Clear;
+    #[test]
+    fn test_preview_updates_after_template_navigation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_tempdir(dir.path());
+        // Navigate to a builtin template (code-review has tools → non-empty preview)
+        navigate_to_template(&mut app, "code-review");
+        app.refresh_preview();
+        assert!(
+            !app.preview_lines.is_empty(),
+            "preview_lines must be non-empty for builtin template 'code-review'"
+        );
+    }
 
-    let popup_width = 50u16.min(area.width.saturating_sub(4));
-    let popup_height = 15u16.min(area.height.saturating_sub(4));
-    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
-    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+    #[test]
+    fn test_preview_content_changes_with_different_templates() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_tempdir(dir.path());
 
-    let popup_area = Rect {
-        x: popup_x,
-        y: popup_y,
-        width: popup_width,
-        height: popup_height,
-    };
+        // Navigate to code-review and capture preview
+        navigate_to_template(&mut app, "code-review");
+        app.refresh_preview();
+        let lines_a = app.preview_lines.clone();
 
-    frame.render_widget(Clear, popup_area);
+        // Navigate to security-audit and capture preview
+        navigate_to_template(&mut app, "security-audit");
+        app.refresh_preview();
+        let lines_b = app.preview_lines.clone();
 
-    let keybindings = vec![
-        Line::from(" Key Bindings"),
-        Line::from("─────────────────────────"),
-        Line::from(" j/k    Navigate list"),
-        Line::from(" Tab    Switch pane focus"),
-        Line::from(" /      Filter mode"),
-        Line::from(" Enter  Launch session"),
-        Line::from(" h      Session history"),
-        Line::from(" L      Relaunch last session"),
-        Line::from(" p      Toggle preview"),
-        Line::from(" d/D    Scroll preview ↓"),
-        Line::from(" u/U    Scroll preview ↑"),
-        Line::from(" ?      This help"),
-        Line::from(" q/Esc  Quit"),
-    ];
+        // Previews must differ between different templates
+        assert_ne!(
+            lines_a, lines_b,
+            "preview content must change when switching from code-review to security-audit"
+        );
+    }
 
-    let popup = Paragraph::new(keybindings)
-        .block(Block::default().borders(Borders::ALL).title(" Help "));
-    frame.render_widget(popup, popup_area);
+    #[test]
+    fn test_preview_updates_after_persona_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_tempdir(dir.path());
+
+        // Start with default selection, capture preview
+        app.refresh_preview();
+        let lines_none = app.preview_lines.clone();
+
+        // Switch persona to strict-security
+        navigate_to_persona(&mut app, "strict-security");
+        app.refresh_preview();
+        let lines_strict = app.preview_lines.clone();
+
+        assert_ne!(
+            lines_none, lines_strict,
+            "preview must change when switching persona to strict-security"
+        );
+    }
+
+    #[test]
+    fn test_preview_scroll_resets_on_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_tempdir(dir.path());
+        navigate_to_template(&mut app, "code-review");
+        app.refresh_preview();
+        // Manually scroll down
+        app.preview_scroll = 10;
+        // Refresh should reset scroll
+        app.refresh_preview();
+        assert_eq!(app.preview_scroll, 0, "refresh_preview must reset preview_scroll to 0");
+    }
+
+    #[test]
+    fn test_none_template_none_persona_preview_minimal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_tempdir(dir.path());
+        // Default: "None (no template)" + "None (no persona)"
+        app.refresh_preview();
+        assert_eq!(
+            app.preview_token_count, 0,
+            "preview_token_count must be 0 for None/None selection"
+        );
+    }
+
+    #[test]
+    fn test_constructor_calls_refresh_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write a .jig.yaml with persona rules so preview has content
+        std::fs::write(
+            dir.path().join(".jig.yaml"),
+            "schema: 1\npersona:\n  name: test\n  rules:\n    - Be helpful\n",
+        ).unwrap();
+        let app = App::with_project_dir(dir.path().to_path_buf());
+        // Constructor should have called refresh_preview, populating lines
+        assert!(
+            !app.preview_lines.is_empty(),
+            "App constructor must call refresh_preview to populate initial state"
+        );
+        assert!(
+            app.preview_token_count > 0,
+            "App constructor must populate token count from project config"
+        );
+    }
+
+    // ── P3: PRD-claimed feature coverage ────────────────────────
+
+    #[test]
+    fn test_layout_mode_from_cols() {
+        assert_eq!(LayoutMode::from_cols(120), LayoutMode::FullTwoPane);
+        assert_eq!(LayoutMode::from_cols(100), LayoutMode::FullTwoPane);
+        assert_eq!(LayoutMode::from_cols(99), LayoutMode::NarrowTwoPane);
+        assert_eq!(LayoutMode::from_cols(80), LayoutMode::NarrowTwoPane);
+        assert_eq!(LayoutMode::from_cols(79), LayoutMode::SinglePane);
+        assert_eq!(LayoutMode::from_cols(60), LayoutMode::SinglePane);
+        assert_eq!(LayoutMode::from_cols(59), LayoutMode::Minimal);
+        assert_eq!(LayoutMode::from_cols(40), LayoutMode::Minimal);
+    }
+
+    #[test]
+    fn test_update_layout_changes_mode() {
+        let mut app = App::new();
+        app.update_layout(120);
+        assert_eq!(app.layout, LayoutMode::FullTwoPane);
+        app.update_layout(50);
+        assert_eq!(app.layout, LayoutMode::Minimal);
+    }
+
+    #[test]
+    fn test_p_key_toggles_preview_in_single_pane() {
+        let mut app = App::new();
+        app.layout = LayoutMode::SinglePane;
+        assert!(app.show_preview);
+        press(&mut app, KeyCode::Char('p'));
+        assert!(!app.show_preview, "p must toggle show_preview off in SinglePane");
+        press(&mut app, KeyCode::Char('p'));
+        assert!(app.show_preview, "p must toggle show_preview on in SinglePane");
+    }
+
+    #[test]
+    fn test_p_key_noop_in_full_two_pane() {
+        let mut app = App::new();
+        app.layout = LayoutMode::FullTwoPane;
+        assert!(app.show_preview);
+        press(&mut app, KeyCode::Char('p'));
+        assert!(app.show_preview, "p must not toggle preview in FullTwoPane");
+    }
+
+    #[test]
+    fn test_tab_switches_focus() {
+        let mut app = App::new();
+        assert_eq!(app.focus, PaneFocus::Templates);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, PaneFocus::Personas, "Tab must switch to Personas");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, PaneFocus::Templates, "Tab must switch back to Templates");
+    }
+
+    #[test]
+    fn test_mouse_scroll_down_increases_preview_scroll() {
+        let mut app = App::new();
+        let initial = app.preview_scroll;
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        });
+        assert_eq!(app.preview_scroll, initial + 3);
+    }
+
+    #[test]
+    fn test_mouse_scroll_up_saturates_at_zero() {
+        let mut app = App::new();
+        app.preview_scroll = 0;
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::empty(),
+        });
+        assert_eq!(app.preview_scroll, 0, "scroll up at 0 must saturate");
+    }
+
+    #[test]
+    fn test_d_u_keys_scroll_preview() {
+        let mut app = App::new();
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.preview_scroll, 3, "d must scroll preview down by 3");
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.preview_scroll, 6);
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.preview_scroll, 3, "u must scroll preview up by 3");
+    }
+
+    #[test]
+    fn test_filter_mode_entry_and_exit() {
+        let mut app = App::new();
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.mode, AppMode::Filter, "/ must enter Filter mode");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal, "Esc must exit Filter mode");
+    }
 }

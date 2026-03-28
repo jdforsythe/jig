@@ -103,7 +103,7 @@ fn run_launch(cli: Cli, cwd: &std::path::Path) -> miette::Result<()> {
     let effective_overrides = CliOverrides {
         template: final_template.clone(),
         persona: final_persona.clone(),
-        model: None,
+        model: cli.model.clone(),
     };
 
     let approval_ui = Box::new(approval::TerminalApprovalUi {

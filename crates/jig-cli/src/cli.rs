@@ -17,6 +17,10 @@ pub struct Cli {
     #[arg(short = 'p', long)]
     pub persona: Option<String>,
 
+    /// Model to use (overrides template/config model)
+    #[arg(short = 'm', long)]
+    pub model: Option<String>,
+
     /// Use last session config (bypasses TUI)
     #[arg(long)]
     pub last: bool,
