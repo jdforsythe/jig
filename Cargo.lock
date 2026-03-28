@@ -908,6 +908,7 @@ dependencies = [
  "ratatui",
  "rustc-hash",
  "scopeguard",
+ "tempfile",
  "tracing",
  "unicode-width 0.2.0",
 ]

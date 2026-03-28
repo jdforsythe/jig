@@ -15,5 +15,8 @@ rustc-hash = { workspace = true }
 tracing = { workspace = true }
 scopeguard = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

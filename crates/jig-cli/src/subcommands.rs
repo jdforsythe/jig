@@ -1410,6 +1410,26 @@ mod tests {
         let result = handle_diff(&other, dir.path());
         assert!(result.is_ok(), "handle_diff must not error when configs differ");
     }
+
+    #[test]
+    fn test_cli_model_flag_parses() {
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from([
+            "jig", "-t", "code-review", "--model", "claude-sonnet-4-5", "--dry-run",
+        ]).unwrap();
+        assert_eq!(cli.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(cli.template.as_deref(), Some("code-review"));
+        assert!(cli.dry_run);
+    }
+
+    #[test]
+    fn test_cli_model_short_flag_parses() {
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from([
+            "jig", "-m", "claude-opus-4-5",
+        ]).unwrap();
+        assert_eq!(cli.model.as_deref(), Some("claude-opus-4-5"));
+    }
 }
 
 #[cfg(test)]
