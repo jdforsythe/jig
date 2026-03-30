@@ -12,18 +12,20 @@ import (
 
 // HomeModel is the main profile list screen.
 type HomeModel struct {
-	profiles      []config.Profile
-	cursor        int
-	width         int
-	height        int
-	nameStyle     lipgloss.Style
-	descStyle     lipgloss.Style
-	sourceStyle   lipgloss.Style
-	selectedStyle lipgloss.Style
-	dimStyle      lipgloss.Style
-	statusStyle   lipgloss.Style
-	statusKey     lipgloss.Style
-	titleStyle    lipgloss.Style
+	profiles        []config.Profile
+	cursor          int
+	width           int
+	height          int
+	nameStyle       lipgloss.Style
+	descStyle       lipgloss.Style
+	sourceStyle     lipgloss.Style
+	selectedStyle   lipgloss.Style
+	dimStyle        lipgloss.Style
+	statusStyle     lipgloss.Style
+	statusKey       lipgloss.Style
+	titleStyle      lipgloss.Style
+	confirmingDelete bool
+	deleteIdx        int
 }
 
 // NewHome creates the home screen model.
@@ -52,6 +54,19 @@ func (m HomeModel) Init() tea.Cmd { return nil }
 func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.confirmingDelete {
+			switch msg.String() {
+			case "y", "Y":
+				p := m.profiles[m.deleteIdx]
+				m.confirmingDelete = false
+				return m, func() tea.Msg {
+					return shared.DeleteProfileMsg{Name: p.Name, Global: p.Source() == config.SourceGlobal}
+				}
+			default:
+				m.confirmingDelete = false
+				return m, nil
+			}
+		}
 		switch msg.String() {
 		case shared.KeyUp, "k":
 			if m.cursor > 0 {
@@ -81,10 +96,9 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case shared.KeyD:
 			if len(m.profiles) > 0 {
-				p := m.profiles[m.cursor]
-				return m, func() tea.Msg {
-					return shared.ErrorMsg{Err: fmt.Errorf("delete %q: use 'jig profiles delete %s' from CLI", p.Name, p.Name)}
-				}
+				m.confirmingDelete = true
+				m.deleteIdx = m.cursor
+				return m, nil
 			}
 		case "v":
 			if len(m.profiles) > 0 {
@@ -137,6 +151,13 @@ func (m HomeModel) View() string {
 
 			b.WriteString(fmt.Sprintf("%s%s%s%s\n", cursor, name, source, desc))
 		}
+	}
+
+	// Confirm-delete overlay
+	if m.confirmingDelete && m.deleteIdx < len(m.profiles) {
+		name := m.profiles[m.deleteIdx].Name
+		b.WriteString("\n  " + m.dimStyle.Render(fmt.Sprintf("Delete %q? ", name)) + m.statusKey.Render("[y]") + m.dimStyle.Render("es / ") + m.statusKey.Render("[n]") + m.dimStyle.Render("o") + "\n")
+		return b.String()
 	}
 
 	// Status bar

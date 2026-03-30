@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jforsythe/jig/internal/config"
+	"github.com/jforsythe/jig/internal/plugin"
 	"github.com/jforsythe/jig/internal/scanner"
 	"github.com/jforsythe/jig/internal/tui/screens"
 	"github.com/jforsythe/jig/internal/tui/shared"
@@ -86,6 +87,15 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == shared.KeyCtrlC {
 			return a, tea.Quit
 		}
+		// When an error is displayed, any key press dismisses it.
+		if a.err != nil {
+			a.err = nil
+			return a, nil
+		}
+
+	case shared.DeleteProfileMsg:
+		_ = config.DeleteProfile(msg.Name, a.cwd, msg.Global)
+		return a.switchScreen(shared.SwitchScreenMsg{Screen: shared.ScreenHome})
 
 	case shared.SwitchScreenMsg:
 		return a.switchScreen(msg)
@@ -160,7 +170,8 @@ func (a *App) switchScreen(msg shared.SwitchScreenMsg) (*App, tea.Cmd) {
 		if p == nil {
 			p = &config.Profile{}
 		}
-		a.editor = screens.NewEditor(p, a.cwd, a.theme.Title, a.theme.ActiveTab, a.theme.Tab, a.theme.Normal, a.theme.Dimmed, a.theme.StatusBar, a.theme.StatusKey, a.theme.Accent)
+		plugins, _ := plugin.Resolve() // non-fatal
+		a.editor = screens.NewEditor(p, a.cwd, plugins, a.theme.Title, a.theme.ActiveTab, a.theme.Tab, a.theme.Normal, a.theme.Dimmed, a.theme.StatusBar, a.theme.StatusKey, a.theme.Accent)
 		a.editor = a.editor.SetSize(a.width, a.height)
 
 	case shared.ScreenPreview:

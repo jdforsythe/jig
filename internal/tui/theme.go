@@ -4,6 +4,7 @@ import (
 	"os"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // Theme holds all styles used in the TUI.
@@ -41,27 +42,30 @@ func NewTheme() Theme {
 	dim := lipgloss.Color("240")      // gray
 
 	if noColor {
+		// Use ANSI profile so bold/underline escape codes are still rendered.
+		// The default NO_COLOR behavior sets profile to Ascii which strips everything.
+		r := lipgloss.NewRenderer(os.Stdout, termenv.WithProfile(termenv.ANSI))
 		return Theme{
-			Title:          lipgloss.NewStyle().Bold(true),
-			Subtitle:       lipgloss.NewStyle(),
-			Selected:       lipgloss.NewStyle().Bold(true),
-			Normal:         lipgloss.NewStyle(),
-			Dimmed:         lipgloss.NewStyle(),
-			Accent:         lipgloss.NewStyle().Bold(true),
-			Error:          lipgloss.NewStyle().Bold(true),
-			Success:        lipgloss.NewStyle().Bold(true),
-			StatusBar:      lipgloss.NewStyle(),
-			StatusKey:      lipgloss.NewStyle().Bold(true),
-			Tab:            lipgloss.NewStyle(),
-			ActiveTab:      lipgloss.NewStyle().Bold(true).Underline(true),
-			Border:         lipgloss.NewStyle(),
-			Preview:        lipgloss.NewStyle(),
-			ProfileName:    lipgloss.NewStyle().Bold(true),
-			ProfileDesc:    lipgloss.NewStyle(),
-			ProfileSource:  lipgloss.NewStyle(),
-			Cursor:         lipgloss.NewStyle().Bold(true),
-			CheckboxOn:     lipgloss.NewStyle().Bold(true),
-			CheckboxOff:    lipgloss.NewStyle(),
+			Title:          r.NewStyle().Bold(true),
+			Subtitle:       r.NewStyle(),
+			Selected:       r.NewStyle().Bold(true),
+			Normal:         r.NewStyle(),
+			Dimmed:         r.NewStyle(),
+			Accent:         r.NewStyle().Bold(true),
+			Error:          r.NewStyle().Bold(true),
+			Success:        r.NewStyle().Bold(true),
+			StatusBar:      r.NewStyle(),
+			StatusKey:      r.NewStyle().Bold(true),
+			Tab:            r.NewStyle(),
+			ActiveTab:      r.NewStyle().Bold(true).Underline(true),
+			Border:         r.NewStyle(),
+			Preview:        r.NewStyle(),
+			ProfileName:    r.NewStyle().Bold(true),
+			ProfileDesc:    r.NewStyle(),
+			ProfileSource:  r.NewStyle(),
+			Cursor:         r.NewStyle().Bold(true),
+			CheckboxOn:     r.NewStyle().Bold(true),
+			CheckboxOff:    r.NewStyle(),
 		}
 	}
 

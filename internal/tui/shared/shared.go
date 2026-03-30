@@ -39,6 +39,12 @@ type ErrorMsg struct {
 	Err error
 }
 
+// DeleteProfileMsg requests deleting a profile.
+type DeleteProfileMsg struct {
+	Name   string
+	Global bool
+}
+
 // Result is returned from the TUI to the caller.
 type Result struct {
 	ProfileName string

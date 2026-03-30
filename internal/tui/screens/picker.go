@@ -11,10 +11,16 @@ import (
 	"github.com/jforsythe/jig/internal/tui/shared"
 )
 
+// isPluginSource returns true if source is a plugin key (not "user" or "project").
+func isPluginSource(source string) bool {
+	return source != "" && source != "user" && source != "project"
+}
+
 // PickerItem is a selectable item in the picker.
 type PickerItem struct {
 	Name     string
 	Category string
+	Source   string // "user", "project", or plugin key
 	Path     string // filesystem path for skills/agents/commands
 	Selected bool
 }
@@ -41,16 +47,32 @@ func NewPicker(disc *scanner.Discovery, titleStyle, accentStyle, dimStyle, succe
 	var items []PickerItem
 
 	for _, s := range disc.MCPServers {
-		items = append(items, PickerItem{Name: s.Name, Category: "MCP Server"})
+		items = append(items, PickerItem{Name: s.Name, Category: "MCP Server", Source: s.Source})
 	}
 	for _, s := range disc.Skills {
-		items = append(items, PickerItem{Name: s.Name, Category: "Skill", Path: s.Path})
+		items = append(items, PickerItem{Name: s.Name, Category: "Skill", Source: s.Source, Path: s.Path})
 	}
 	for _, a := range disc.Agents {
-		items = append(items, PickerItem{Name: a.Name, Category: "Agent", Path: a.Path})
+		items = append(items, PickerItem{Name: a.Name, Category: "Agent", Source: a.Source, Path: a.Path})
 	}
 	for _, c := range disc.Commands {
-		items = append(items, PickerItem{Name: c.Name, Category: "Command", Path: c.Path})
+		items = append(items, PickerItem{Name: c.Name, Category: "Command", Source: c.Source, Path: c.Path})
+	}
+
+	// Add components from installed plugins.
+	for _, pi := range disc.Plugins {
+		for _, name := range pi.Components.MCPServers {
+			items = append(items, PickerItem{Name: name, Category: "MCP Server", Source: pi.Key})
+		}
+		for _, name := range pi.Components.Skills {
+			items = append(items, PickerItem{Name: name, Category: "Skill", Source: pi.Key})
+		}
+		for _, name := range pi.Components.Agents {
+			items = append(items, PickerItem{Name: name, Category: "Agent", Source: pi.Key})
+		}
+		for _, name := range pi.Components.Commands {
+			items = append(items, PickerItem{Name: name, Category: "Command", Source: pi.Key})
+		}
 	}
 
 	m := PickerModel{
@@ -119,15 +141,13 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return shared.LaunchProfileMsg{ProfileName: "ad-hoc", Profile: p}
 			}
 		case shared.KeyEsc, shared.KeyQ:
-			return m, func() tea.Msg {
-				return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
-			}
+			return m, tea.Quit
 		}
 	}
 	return m, nil
 }
 
-func (m *PickerModel) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m PickerModel) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case shared.KeyEnter, shared.KeyEsc:
 		m.filtering = false
@@ -152,18 +172,70 @@ func (m *PickerModel) buildProfile() *config.Profile {
 		if !item.Selected {
 			continue
 		}
+		plugin := isPluginSource(item.Source)
 		switch item.Category {
 		case "MCP Server":
-			p.MCPServers = append(p.MCPServers, config.MCPServerEntry{Ref: item.Name})
+			if plugin {
+				if p.PluginComponents == nil {
+					p.PluginComponents = make(map[string]config.PluginComponentSelection)
+				}
+				sel := p.PluginComponents[item.Source]
+				sel.MCPServers = append(sel.MCPServers, item.Name)
+				p.PluginComponents[item.Source] = sel
+			} else {
+				p.MCPServers = append(p.MCPServers, config.MCPServerEntry{Ref: item.Name})
+			}
 		case "Skill":
-			p.Skills = append(p.Skills, config.PathEntry{Path: item.Path})
+			if plugin {
+				if p.PluginComponents == nil {
+					p.PluginComponents = make(map[string]config.PluginComponentSelection)
+				}
+				sel := p.PluginComponents[item.Source]
+				sel.Skills = append(sel.Skills, item.Name)
+				p.PluginComponents[item.Source] = sel
+			} else {
+				p.Skills = append(p.Skills, config.PathEntry{Path: item.Path})
+			}
 		case "Agent":
-			p.Agents = append(p.Agents, config.PathEntry{Path: item.Path})
+			if plugin {
+				if p.PluginComponents == nil {
+					p.PluginComponents = make(map[string]config.PluginComponentSelection)
+				}
+				sel := p.PluginComponents[item.Source]
+				sel.Agents = append(sel.Agents, item.Name)
+				p.PluginComponents[item.Source] = sel
+			} else {
+				p.Agents = append(p.Agents, config.PathEntry{Path: item.Path})
+			}
 		case "Command":
-			p.Commands = append(p.Commands, config.PathEntry{Path: item.Path})
+			if plugin {
+				if p.PluginComponents == nil {
+					p.PluginComponents = make(map[string]config.PluginComponentSelection)
+				}
+				sel := p.PluginComponents[item.Source]
+				sel.Commands = append(sel.Commands, item.Name)
+				p.PluginComponents[item.Source] = sel
+			} else {
+				p.Commands = append(p.Commands, config.PathEntry{Path: item.Path})
+			}
 		}
 	}
 	return p
+}
+
+// sourceLabel returns a human-readable label for a resource source.
+func sourceLabel(source string) string {
+	switch source {
+	case "user":
+		return "User"
+	case "project":
+		return "Project"
+	default:
+		if source != "" {
+			return source
+		}
+		return "Unknown"
+	}
 }
 
 // SelectedItems returns all selected items.
@@ -187,8 +259,9 @@ func (m PickerModel) View() string {
 	}
 	b.WriteString("\n")
 
-	// Group items by category
+	// Group items by category, then by source within each category
 	lastCat := ""
+	lastSrc := ""
 	for i, idx := range m.filtered {
 		item := m.items[idx]
 
@@ -198,6 +271,13 @@ func (m PickerModel) View() string {
 			}
 			b.WriteString("  " + m.accentStyle.Render(item.Category) + "\n")
 			lastCat = item.Category
+			lastSrc = ""
+		}
+
+		if item.Source != "" && item.Source != lastSrc {
+			srcLabel := sourceLabel(item.Source)
+			b.WriteString("  " + m.dimStyle.Render("── "+srcLabel+" ──") + "\n")
+			lastSrc = item.Source
 		}
 
 		cursor := "  "
