@@ -184,7 +184,7 @@ func (m EditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *EditorModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m EditorModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case shared.KeyEnter:
 		m.fields[m.activeTab][m.fieldCursor].Value = m.editBuffer

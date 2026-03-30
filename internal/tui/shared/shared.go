@@ -26,6 +26,7 @@ type SwitchScreenMsg struct {
 // LaunchProfileMsg requests launching a profile.
 type LaunchProfileMsg struct {
 	ProfileName string
+	Profile     *config.Profile // set for ad-hoc launches (picker mode)
 }
 
 // ProfilesUpdatedMsg signals that the profile list changed.
@@ -41,6 +42,7 @@ type ErrorMsg struct {
 // Result is returned from the TUI to the caller.
 type Result struct {
 	ProfileName string
+	Profile     *config.Profile // set for ad-hoc launches (picker mode)
 }
 
 // Key constants for the TUI.

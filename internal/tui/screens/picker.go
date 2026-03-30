@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/jforsythe/jig/internal/config"
 	"github.com/jforsythe/jig/internal/scanner"
 	"github.com/jforsythe/jig/internal/tui/shared"
 )
@@ -14,6 +15,7 @@ import (
 type PickerItem struct {
 	Name     string
 	Category string
+	Path     string // filesystem path for skills/agents/commands
 	Selected bool
 }
 
@@ -42,13 +44,13 @@ func NewPicker(disc *scanner.Discovery, titleStyle, accentStyle, dimStyle, succe
 		items = append(items, PickerItem{Name: s.Name, Category: "MCP Server"})
 	}
 	for _, s := range disc.Skills {
-		items = append(items, PickerItem{Name: s.Name, Category: "Skill"})
+		items = append(items, PickerItem{Name: s.Name, Category: "Skill", Path: s.Path})
 	}
 	for _, a := range disc.Agents {
-		items = append(items, PickerItem{Name: a.Name, Category: "Agent"})
+		items = append(items, PickerItem{Name: a.Name, Category: "Agent", Path: a.Path})
 	}
 	for _, c := range disc.Commands {
-		items = append(items, PickerItem{Name: c.Name, Category: "Command"})
+		items = append(items, PickerItem{Name: c.Name, Category: "Command", Path: c.Path})
 	}
 
 	m := PickerModel{
@@ -112,8 +114,9 @@ func (m PickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filtering = true
 			m.filter = ""
 		case shared.KeyEnter:
+			p := m.buildProfile()
 			return m, func() tea.Msg {
-				return shared.LaunchProfileMsg{ProfileName: "ad-hoc"}
+				return shared.LaunchProfileMsg{ProfileName: "ad-hoc", Profile: p}
 			}
 		case shared.KeyEsc, shared.KeyQ:
 			return m, func() tea.Msg {
@@ -140,6 +143,27 @@ func (m *PickerModel) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// buildProfile constructs an ad-hoc profile from the selected items.
+func (m *PickerModel) buildProfile() *config.Profile {
+	p := &config.Profile{Name: "ad-hoc"}
+	for _, item := range m.items {
+		if !item.Selected {
+			continue
+		}
+		switch item.Category {
+		case "MCP Server":
+			p.MCPServers = append(p.MCPServers, config.MCPServerEntry{Ref: item.Name})
+		case "Skill":
+			p.Skills = append(p.Skills, config.PathEntry{Path: item.Path})
+		case "Agent":
+			p.Agents = append(p.Agents, config.PathEntry{Path: item.Path})
+		case "Command":
+			p.Commands = append(p.Commands, config.PathEntry{Path: item.Path})
+		}
+	}
+	return p
 }
 
 // SelectedItems returns all selected items.

@@ -7,11 +7,12 @@ import (
 	"syscall"
 )
 
-// Cleanup manages temp directory cleanup on exit or signal.
+// Cleanup manages temp directory cleanup and process teardown on exit or signal.
 type Cleanup struct {
-	dirs []string
-	mu   sync.Mutex
-	once sync.Once
+	dirs      []string
+	processes []*os.Process
+	mu        sync.Mutex
+	once      sync.Once
 }
 
 // NewCleanup creates a new Cleanup manager and registers signal handlers.
@@ -28,14 +29,27 @@ func (c *Cleanup) Register(dir string) {
 	c.dirs = append(c.dirs, dir)
 }
 
-// Run performs cleanup of all registered directories. Safe to call multiple times.
+// RegisterProcess adds a subprocess that should receive SIGTERM on cleanup.
+func (c *Cleanup) RegisterProcess(p *os.Process) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.processes = append(c.processes, p)
+}
+
+// Run performs cleanup of all registered resources. Safe to call multiple times.
 func (c *Cleanup) Run() {
 	c.once.Do(func() {
 		c.mu.Lock()
+		procs := make([]*os.Process, len(c.processes))
+		copy(procs, c.processes)
 		dirs := make([]string, len(c.dirs))
 		copy(dirs, c.dirs)
 		c.mu.Unlock()
 
+		// Signal registered processes before cleaning up
+		for _, p := range procs {
+			p.Signal(syscall.SIGTERM)
+		}
 		for _, dir := range dirs {
 			os.RemoveAll(dir)
 		}

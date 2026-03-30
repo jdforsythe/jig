@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jforsythe/jig/internal/config"
+	"github.com/jforsythe/jig/internal/scanner"
 	"github.com/jforsythe/jig/internal/tui/screens"
 	"github.com/jforsythe/jig/internal/tui/shared"
 )
@@ -18,13 +19,14 @@ type App struct {
 	home     screens.HomeModel
 	editor   screens.EditorModel
 	preview  screens.PreviewModel
+	picker   screens.PickerModel
 	result   *shared.Result
 	width    int
 	height   int
 	err      error
 }
 
-// New creates a new App.
+// New creates a new App starting on the home screen.
 func New(profiles []config.Profile, cwd string) *App {
 	theme := NewTheme()
 	return &App{
@@ -33,6 +35,17 @@ func New(profiles []config.Profile, cwd string) *App {
 		theme:    theme,
 		screen:   shared.ScreenHome,
 		home:     screens.NewHome(profiles, theme.ProfileName, theme.ProfileDesc, theme.ProfileSource, theme.Selected, theme.Dimmed, theme.StatusBar, theme.StatusKey, theme.Title),
+	}
+}
+
+// NewPickerApp creates a new App starting on the picker screen.
+func NewPickerApp(disc *scanner.Discovery, cwd string) *App {
+	theme := NewTheme()
+	return &App{
+		cwd:    cwd,
+		theme:  theme,
+		screen: shared.ScreenPicker,
+		picker: screens.NewPicker(disc, theme.Title, theme.Accent, theme.Dimmed, theme.Success, theme.StatusBar, theme.StatusKey),
 	}
 }
 
@@ -64,6 +77,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if a.screen == shared.ScreenEditor {
 			a.editor = a.editor.SetSize(msg.Width, msg.Height)
 		}
+		if a.screen == shared.ScreenPicker {
+			a.picker = a.picker.SetSize(msg.Width, msg.Height)
+		}
 		return a, nil
 
 	case tea.KeyMsg:
@@ -75,7 +91,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a.switchScreen(msg)
 
 	case shared.LaunchProfileMsg:
-		a.result = &shared.Result{ProfileName: msg.ProfileName}
+		a.result = &shared.Result{
+			ProfileName: msg.ProfileName,
+			Profile:     msg.Profile,
+		}
 		return a, tea.Quit
 
 	case shared.ErrorMsg:
@@ -97,6 +116,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		preview, cmd := a.preview.Update(msg)
 		a.preview = preview.(screens.PreviewModel)
 		return a, cmd
+	case shared.ScreenPicker:
+		picker, cmd := a.picker.Update(msg)
+		a.picker = picker.(screens.PickerModel)
+		return a, cmd
 	}
 
 	return a, nil
@@ -114,6 +137,8 @@ func (a *App) View() string {
 		return a.editor.View()
 	case shared.ScreenPreview:
 		return a.preview.View()
+	case shared.ScreenPicker:
+		return a.picker.View()
 	default:
 		return "Unknown screen"
 	}
@@ -142,6 +167,9 @@ func (a *App) switchScreen(msg shared.SwitchScreenMsg) (*App, tea.Cmd) {
 		p := msg.Profile
 		a.preview = screens.NewPreview(p, a.cwd, a.theme.Title, a.theme.Preview, a.theme.StatusBar, a.theme.StatusKey, a.theme.Accent, a.theme.Dimmed)
 		a.preview = a.preview.SetSize(a.width, a.height)
+
+	case shared.ScreenPicker:
+		// Picker is initialized externally via NewPickerApp; switching back is not supported
 	}
 
 	return a, nil

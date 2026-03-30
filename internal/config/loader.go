@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -103,7 +104,7 @@ func loadProfilesFromDir(dir string, source ProfileSource) ([]Profile, error) {
 
 	var profiles []Profile
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") || filepath.Ext(e.Name()) != ".yaml" {
 			continue
 		}
 		p, err := loadFromFile(filepath.Join(dir, e.Name()), source)

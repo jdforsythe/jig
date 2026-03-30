@@ -18,20 +18,42 @@ var (
 )
 
 var runCmd = &cobra.Command{
-	Use:   "run [profile] [-- flags...]",
+	Use:   "run [profile] [flags] [-- passthrough...]",
 	Short: "Launch Claude Code with a profile",
 	Long:  "Launches a Claude Code session configured with the specified profile. Everything after -- is passed directly to claude.",
-	Args:  cobra.MaximumNArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		// Only count args before the -- separator
+		count := len(args)
+		if d := cmd.ArgsLenAtDash(); d >= 0 {
+			count = d
+		}
+		if count > 1 {
+			return fmt.Errorf("accepts at most 1 arg(s), received %d", count)
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if runPick {
 			return runPickMode()
 		}
 
-		if len(args) == 0 {
+		dashAt := cmd.ArgsLenAtDash()
+
+		preCount := len(args)
+		if dashAt >= 0 {
+			preCount = dashAt
+		}
+
+		if preCount == 0 {
 			return fmt.Errorf("profile name required (or use --pick for ad-hoc selection)")
 		}
 
-		return runProfile(args[0], cmd.ArgsLenAtDash())
+		var passthrough []string
+		if dashAt >= 0 {
+			passthrough = args[dashAt:]
+		}
+
+		return runProfile(args[0], passthrough)
 	},
 }
 
@@ -43,7 +65,7 @@ func init() {
 	runCmd.Flags().StringVar(&runPerm, "permission-mode", "", "Override permission mode")
 }
 
-func runProfile(name string, dashAt int) error {
+func runProfile(name string, passthrough []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -69,12 +91,6 @@ func runProfile(name string, dashAt int) error {
 		return fmt.Errorf("resolving profile %q: %w", name, err)
 	}
 
-	// Get passthrough flags
-	var passthrough []string
-	if dashAt >= 0 {
-		passthrough = os.Args[dashAt+1:]
-	}
-
 	// Detect claude
 	detected, err := claude.Detect()
 	if err != nil {
@@ -94,26 +110,32 @@ func runProfile(name string, dashAt int) error {
 	}
 
 	// Build CLI args
-	args := claude.BuildCLIArgs(p, pluginDir, passthrough)
+	cliArgs := claude.BuildCLIArgs(p, pluginDir, passthrough)
 
 	if runDryRun {
 		fmt.Println("Profile:", p.Name)
 		fmt.Println("Claude:", detected.Path, "("+detected.Version+")")
 		fmt.Println("Plugin dir:", pluginDir)
 		fmt.Println("Command:", detected.Path)
-		for _, a := range args {
+		for _, a := range cliArgs {
 			fmt.Println("  ", a)
 		}
 		return nil
 	}
 
-	// Setup cleanup
+	// Setup cleanup (registers signal handlers)
 	cleanup := claude.NewCleanup()
 	cleanup.Register(pluginDir)
 	defer cleanup.Run()
 
-	// Launch
-	exitCode, err := claude.Launch(detected.Path, args)
+	// Start claude and register its process for signal forwarding
+	cmd, err := claude.Start(detected.Path, cliArgs)
+	if err != nil {
+		return err
+	}
+	cleanup.RegisterProcess(cmd.Process)
+
+	exitCode, err := claude.Wait(cmd)
 	if err != nil {
 		return err
 	}
@@ -124,6 +146,5 @@ func runProfile(name string, dashAt int) error {
 }
 
 func runPickMode() error {
-	fmt.Println("Ad-hoc picker not yet implemented (requires TUI)")
-	return nil
+	return runPickerTUI()
 }

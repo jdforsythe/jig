@@ -2,45 +2,45 @@ package config
 
 // Profile represents a jig profile configuration.
 type Profile struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"`
-	Extends     string `yaml:"extends,omitempty"`
+	Name        string `yaml:"name"                    json:"name"`
+	Description string `yaml:"description,omitempty"   json:"description,omitempty"`
+	Extends     string `yaml:"extends,omitempty"       json:"extends,omitempty"`
 
 	// Core settings → Claude CLI flags
-	Model          string `yaml:"model,omitempty"`
-	Effort         string `yaml:"effort,omitempty"`
-	PermissionMode string `yaml:"permission_mode,omitempty"`
+	Model          string `yaml:"model,omitempty"           json:"model,omitempty"`
+	Effort         string `yaml:"effort,omitempty"          json:"effort,omitempty"`
+	PermissionMode string `yaml:"permission_mode,omitempty" json:"permission_mode,omitempty"`
 
 	// System prompt
-	SystemPrompt       string `yaml:"system_prompt,omitempty"`
-	AppendSystemPrompt string `yaml:"append_system_prompt,omitempty"`
+	SystemPrompt       string `yaml:"system_prompt,omitempty"        json:"system_prompt,omitempty"`
+	AppendSystemPrompt string `yaml:"append_system_prompt,omitempty" json:"append_system_prompt,omitempty"`
 
 	// Tool permissions
-	AllowedTools    []string `yaml:"allowed_tools,omitempty"`
-	DisallowedTools []string `yaml:"disallowed_tools,omitempty"`
+	AllowedTools    []string `yaml:"allowed_tools,omitempty"    json:"allowed_tools,omitempty"`
+	DisallowedTools []string `yaml:"disallowed_tools,omitempty" json:"disallowed_tools,omitempty"`
 
 	// Session agent
-	SessionAgent string `yaml:"session_agent,omitempty"`
+	SessionAgent string `yaml:"session_agent,omitempty" json:"session_agent,omitempty"`
 
 	// MCP servers
-	MCPServers []MCPServerEntry `yaml:"mcp_servers,omitempty"`
+	MCPServers []MCPServerEntry `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
 
 	// Skills, agents, commands → symlinked into plugin dir
-	Skills   []PathEntry `yaml:"skills,omitempty"`
-	Agents   []PathEntry `yaml:"agents,omitempty"`
-	Commands []PathEntry `yaml:"commands,omitempty"`
+	Skills   []PathEntry `yaml:"skills,omitempty"   json:"skills,omitempty"`
+	Agents   []PathEntry `yaml:"agents,omitempty"   json:"agents,omitempty"`
+	Commands []PathEntry `yaml:"commands,omitempty" json:"commands,omitempty"`
 
 	// Hooks
-	Hooks map[string][]HookMatcher `yaml:"hooks,omitempty"`
+	Hooks map[string][]HookMatcher `yaml:"hooks,omitempty" json:"hooks,omitempty"`
 
 	// Hook scripts to copy into plugin dir
-	HookScripts []HookScript `yaml:"hook_scripts,omitempty"`
+	HookScripts []HookScript `yaml:"hook_scripts,omitempty" json:"hook_scripts,omitempty"`
 
 	// Raw settings.json passthrough
-	Settings map[string]any `yaml:"settings,omitempty"`
+	Settings map[string]any `yaml:"settings,omitempty" json:"settings,omitempty"`
 
 	// Extra CLI flags
-	ExtraFlags []string `yaml:"extra_flags,omitempty"`
+	ExtraFlags []string `yaml:"extra_flags,omitempty" json:"extra_flags,omitempty"`
 
 	// Source tracking (not serialized)
 	source   ProfileSource

@@ -15,4 +15,5 @@ func init() {
 	profilesCmd.AddCommand(profilesDeleteCmd)
 	profilesCmd.AddCommand(profilesShowCmd)
 	profilesCmd.AddCommand(profilesExportCmd)
+	profilesCmd.AddCommand(profilesValidateCmd)
 }
