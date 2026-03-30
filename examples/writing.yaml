@@ -1,0 +1,17 @@
+name: writing
+description: "Documentation and technical writing mode"
+model: sonnet
+effort: medium
+permission_mode: plan
+
+append_system_prompt: |
+  You are helping with technical writing and documentation.
+  Focus on clarity, accuracy, and consistent tone.
+  Use active voice. Keep sentences concise.
+
+allowed_tools:
+  - Read
+  - Write
+  - Edit
+  - Grep
+  - Glob

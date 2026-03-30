@@ -1,0 +1,26 @@
+name: backend
+description: "Backend development with database access"
+model: opus
+effort: high
+permission_mode: plan
+
+append_system_prompt: |
+  You are working on backend services. Prioritize:
+  - Type safety and error handling
+  - Database query performance
+  - API backward compatibility
+  - Test coverage
+
+allowed_tools:
+  - Read
+  - Write
+  - Edit
+  - Grep
+  - Glob
+  - "Bash(go:*)"
+  - "Bash(make:*)"
+  - "Bash(git:*)"
+  - "Bash(docker:*)"
+
+mcp_servers:
+  - ref: github

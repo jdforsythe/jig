@@ -1,0 +1,18 @@
+name: frontend
+description: "Frontend development with full tool access"
+model: sonnet
+effort: high
+
+append_system_prompt: |
+  You are working on the frontend. Follow existing patterns and conventions.
+  Prefer functional components. Write tests for new functionality.
+
+allowed_tools:
+  - Read
+  - Write
+  - Edit
+  - Grep
+  - Glob
+  - "Bash(npm:*)"
+  - "Bash(npx:*)"
+  - "Bash(git:*)"

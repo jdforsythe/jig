@@ -1,0 +1,20 @@
+name: quick-fix
+description: "Fast bug fixing with sonnet and full tool access"
+extends: base
+model: sonnet
+effort: max
+
+append_system_prompt: |
+  Fix the reported bug quickly. Write a minimal, targeted fix.
+  Do not refactor surrounding code.
+
+allowed_tools:
+  - Read
+  - Write
+  - Edit
+  - Grep
+  - Glob
+  - "Bash(git:*)"
+  - "Bash(make:*)"
+  - "Bash(go:*)"
+  - "Bash(npm:*)"

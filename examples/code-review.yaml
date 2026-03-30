@@ -1,0 +1,24 @@
+name: code-review
+description: "Focused code review mode with security emphasis"
+model: opus
+effort: high
+permission_mode: plan
+
+append_system_prompt: |
+  You are reviewing code. Focus on:
+  - Security vulnerabilities (injection, XSS, SSRF)
+  - Logic errors and edge cases
+  - Performance bottlenecks
+  - Code clarity and maintainability
+  Be specific and cite line numbers.
+
+allowed_tools:
+  - Read
+  - Grep
+  - Glob
+  - "Bash(git:*)"
+
+disallowed_tools:
+  - "Bash(rm:*)"
+  - Write
+  - Edit

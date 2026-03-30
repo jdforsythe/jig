@@ -1,0 +1,10 @@
+name: base
+description: "Base profile with sensible defaults — extend this"
+effort: high
+permission_mode: default
+
+allowed_tools:
+  - Read
+  - Grep
+  - Glob
+  - "Bash(git:*)"
