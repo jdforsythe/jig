@@ -102,6 +102,8 @@ func mergeProfiles(parent, child *Profile) *Profile {
 	// Maps: deep merge
 	result.Hooks = deepMergeHooks(parent.Hooks, child.Hooks)
 	result.Settings = deepMergeMap(parent.Settings, child.Settings)
+	result.EnabledPlugins = mergeEnabledPlugins(parent.EnabledPlugins, child.EnabledPlugins)
+	result.PluginComponents = mergePluginComponents(parent.PluginComponents, child.PluginComponents)
 
 	// Source tracking from child
 	result.source = child.source
@@ -123,6 +125,40 @@ func deepMergeHooks(parent, child map[string][]HookMatcher) map[string][]HookMat
 	}
 	for k, v := range child {
 		result[k] = v
+	}
+	return result
+}
+
+func mergeEnabledPlugins(parent, child map[string]bool) map[string]bool {
+	if child == nil {
+		return parent
+	}
+	if parent == nil {
+		return child
+	}
+	result := make(map[string]bool, len(parent)+len(child))
+	for k, v := range parent {
+		result[k] = v
+	}
+	for k, v := range child {
+		result[k] = v
+	}
+	return result
+}
+
+func mergePluginComponents(parent, child map[string]PluginComponentSelection) map[string]PluginComponentSelection {
+	if child == nil {
+		return parent
+	}
+	if parent == nil {
+		return child
+	}
+	result := make(map[string]PluginComponentSelection, len(parent)+len(child))
+	for k, v := range parent {
+		result[k] = v
+	}
+	for k, v := range child {
+		result[k] = v // child's selection replaces parent's for that plugin key
 	}
 	return result
 }

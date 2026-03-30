@@ -47,12 +47,12 @@ func runTUI() error {
 		return err
 	}
 
-	pluginDir, err := claude.GeneratePluginDir(p, mcpIndex)
+	pluginDir, settingsPath, err := claude.GeneratePluginDir(p, mcpIndex)
 	if err != nil {
 		return err
 	}
 
-	args := claude.BuildCLIArgs(p, pluginDir, nil)
+	args := claude.BuildCLIArgs(p, pluginDir, settingsPath, nil)
 
 	cleanup := claude.NewCleanup()
 	cleanup.Register(pluginDir)
@@ -111,12 +111,12 @@ func runPickerTUI() error {
 		return fmt.Errorf("building MCP index: %w", err)
 	}
 
-	pluginDir, err := claude.GeneratePluginDir(p, mcpIndex)
+	pluginDir, settingsPath, err := claude.GeneratePluginDir(p, mcpIndex)
 	if err != nil {
 		return fmt.Errorf("generating plugin dir: %w", err)
 	}
 
-	args := claude.BuildCLIArgs(p, pluginDir, nil)
+	args := claude.BuildCLIArgs(p, pluginDir, settingsPath, nil)
 
 	cleanup := claude.NewCleanup()
 	cleanup.Register(pluginDir)

@@ -104,18 +104,19 @@ func runProfile(name string, passthrough []string) error {
 	}
 
 	// Generate plugin dir
-	pluginDir, err := claude.GeneratePluginDir(p, mcpIndex)
+	pluginDir, settingsPath, err := claude.GeneratePluginDir(p, mcpIndex)
 	if err != nil {
 		return fmt.Errorf("generating plugin dir: %w", err)
 	}
 
 	// Build CLI args
-	cliArgs := claude.BuildCLIArgs(p, pluginDir, passthrough)
+	cliArgs := claude.BuildCLIArgs(p, pluginDir, settingsPath, passthrough)
 
 	if runDryRun {
 		fmt.Println("Profile:", p.Name)
 		fmt.Println("Claude:", detected.Path, "("+detected.Version+")")
 		fmt.Println("Plugin dir:", pluginDir)
+		fmt.Println("Settings:", settingsPath)
 		fmt.Println("Command:", detected.Path)
 		for _, a := range cliArgs {
 			fmt.Println("  ", a)

@@ -35,7 +35,7 @@ var profilesExportCmd = &cobra.Command{
 
 		switch exportFormat {
 		case "args":
-			cliArgs := claude.BuildCLIArgs(p, "<PLUGIN_DIR>", nil)
+			cliArgs := claude.BuildCLIArgs(p, "<PLUGIN_DIR>", "<SETTINGS_PATH>", nil)
 			fmt.Println("claude \\")
 			for i, a := range cliArgs {
 				if i < len(cliArgs)-1 {
@@ -45,7 +45,7 @@ var profilesExportCmd = &cobra.Command{
 				}
 			}
 		case "plugin":
-			dir, err := claude.GeneratePluginDir(p, mcpIndex)
+			dir, _, err := claude.GeneratePluginDir(p, mcpIndex)
 			if err != nil {
 				return err
 			}

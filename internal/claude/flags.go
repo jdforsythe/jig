@@ -3,8 +3,12 @@ package claude
 import "github.com/jforsythe/jig/internal/config"
 
 // BuildCLIArgs constructs the claude CLI argument slice from a resolved profile.
-func BuildCLIArgs(p *config.Profile, pluginDir string, passthrough []string) []string {
+// settingsPath points to the jig-generated settings file (always non-empty).
+func BuildCLIArgs(p *config.Profile, pluginDir, settingsPath string, passthrough []string) []string {
 	var args []string
+
+	// Settings file for plugin isolation (always present)
+	args = append(args, "--settings", settingsPath)
 
 	// Plugin dir
 	args = append(args, "--plugin-dir", pluginDir)

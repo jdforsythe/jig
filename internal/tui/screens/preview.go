@@ -60,7 +60,7 @@ func (m *PreviewModel) buildContent() {
 
 	// CLI args that would be generated
 	b.WriteString(m.accentStyle.Render("CLI Arguments:") + "\n")
-	args := claude.BuildCLIArgs(m.profile, "<plugin-dir>", nil)
+	args := claude.BuildCLIArgs(m.profile, "<plugin-dir>", "<settings-path>", nil)
 	b.WriteString("claude")
 	for _, a := range args {
 		if strings.HasPrefix(a, "--") {

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jforsythe/jig/internal/plugin"
 )
 
 // Discovery holds all discovered resources.
@@ -12,6 +14,7 @@ type Discovery struct {
 	Skills     []ResourceInfo
 	Agents     []ResourceInfo
 	Commands   []ResourceInfo
+	Plugins    []*plugin.PluginInfo
 }
 
 // ServerInfo describes a discovered MCP server.
@@ -22,12 +25,13 @@ type ServerInfo struct {
 
 // ResourceInfo describes a discovered skill, agent, or command.
 type ResourceInfo struct {
-	Name string
-	Path string
-	Type string // "skill", "agent", "command"
+	Name   string
+	Path   string
+	Type   string // "skill", "agent", "command"
+	Source string // "user", "project", or plugin key (e.g. "ss-engineering@marketplace")
 }
 
-// Scan discovers all available resources from user and project configs.
+// Scan discovers all available resources from user, project, and plugin configs.
 func Scan(cwd string) (*Discovery, error) {
 	d := &Discovery{}
 
@@ -40,19 +44,23 @@ func Scan(cwd string) (*Discovery, error) {
 	d.Skills = scanResources("skill", []string{
 		filepath.Join(home, ".claude", "skills"),
 		filepath.Join(cwd, ".claude", "skills"),
-	})
+	}, []string{"user", "project"})
 
 	// Scan for agents
 	d.Agents = scanResources("agent", []string{
 		filepath.Join(home, ".claude", "agents"),
 		filepath.Join(cwd, ".claude", "agents"),
-	})
+	}, []string{"user", "project"})
 
 	// Scan for commands
 	d.Commands = scanResources("command", []string{
 		filepath.Join(home, ".claude", "commands"),
 		filepath.Join(cwd, ".claude", "commands"),
-	})
+	}, []string{"user", "project"})
+
+	// Scan for installed plugins (non-fatal)
+	plugins, _ := plugin.Resolve()
+	d.Plugins = plugins
 
 	return d, nil
 }
@@ -70,8 +78,6 @@ func scanMCPServers(cwd, home string) []ServerInfo {
 			continue
 		}
 
-		// Simple extraction of server names from JSON
-		// We look for keys in "mcpServers" object
 		names := extractMCPServerNames(string(data))
 		for _, name := range names {
 			servers = append(servers, ServerInfo{Name: name, Source: p})
@@ -88,7 +94,6 @@ func extractMCPServerNames(jsonStr string) []string {
 		return nil
 	}
 
-	// Find the opening brace of the mcpServers object
 	rest := jsonStr[idx:]
 	braceIdx := strings.Index(rest, "{")
 	if braceIdx < 0 {
@@ -96,7 +101,6 @@ func extractMCPServerNames(jsonStr string) []string {
 	}
 	rest = rest[braceIdx+1:]
 
-	// Extract quoted keys at this nesting level
 	depth := 1
 	i := 0
 	for i < len(rest) && depth > 0 {
@@ -107,7 +111,6 @@ func extractMCPServerNames(jsonStr string) []string {
 			depth--
 		case '"':
 			if depth == 1 {
-				// This might be a key
 				end := strings.Index(rest[i+1:], `"`)
 				if end >= 0 {
 					key := rest[i+1 : i+1+end]
@@ -122,11 +125,16 @@ func extractMCPServerNames(jsonStr string) []string {
 	return names
 }
 
-func scanResources(typ string, dirs []string) []ResourceInfo {
+func scanResources(typ string, dirs []string, sources []string) []ResourceInfo {
 	var resources []ResourceInfo
 	seen := make(map[string]bool)
 
-	for _, dir := range dirs {
+	for dirIdx, dir := range dirs {
+		source := "user"
+		if dirIdx < len(sources) {
+			source = sources[dirIdx]
+		}
+
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue
@@ -134,7 +142,6 @@ func scanResources(typ string, dirs []string) []ResourceInfo {
 
 		for _, e := range entries {
 			name := e.Name()
-			// Skip hidden files
 			if strings.HasPrefix(name, ".") {
 				continue
 			}
@@ -146,9 +153,10 @@ func scanResources(typ string, dirs []string) []ResourceInfo {
 			seen[baseName] = true
 
 			resources = append(resources, ResourceInfo{
-				Name: baseName,
-				Path: filepath.Join(dir, name),
-				Type: typ,
+				Name:   baseName,
+				Path:   filepath.Join(dir, name),
+				Type:   typ,
+				Source: source,
 			})
 		}
 	}

@@ -42,9 +42,23 @@ type Profile struct {
 	// Extra CLI flags
 	ExtraFlags []string `yaml:"extra_flags,omitempty" json:"extra_flags,omitempty"`
 
+	// Plugin isolation: full plugin enables
+	EnabledPlugins map[string]bool `yaml:"enabled_plugins,omitempty" json:"enabled_plugins,omitempty"`
+
+	// Plugin isolation: individual component selections from plugins
+	PluginComponents map[string]PluginComponentSelection `yaml:"plugin_components,omitempty" json:"plugin_components,omitempty"`
+
 	// Source tracking (not serialized)
 	source   ProfileSource
 	filePath string
+}
+
+// PluginComponentSelection specifies which individual components to load from a plugin.
+type PluginComponentSelection struct {
+	Agents     []string `yaml:"agents,omitempty"      json:"agents,omitempty"`
+	Skills     []string `yaml:"skills,omitempty"      json:"skills,omitempty"`
+	Commands   []string `yaml:"commands,omitempty"    json:"commands,omitempty"`
+	MCPServers []string `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
 }
 
 // MCPServerEntry is either a reference to an existing MCP server or an inline definition.
