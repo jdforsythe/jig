@@ -26,12 +26,12 @@
 
 ```sh
 # go install
-go install github.com/jforsythe/jig@latest
+go install github.com/jdforsythe/jig@latest
 
 # homebrew
-brew tap jforsythe/tap && brew install jig
+brew tap jdforsythe/jig && brew install jig
 
-# binary — https://github.com/jforsythe/jig/releases/latest
+# binary — https://github.com/jdforsythe/jig/releases/latest
 ```
 
 ---
