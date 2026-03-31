@@ -267,14 +267,9 @@ jig completion fish > ~/.config/fish/completions/jig.fish
 
 ## Contributing
 
-```sh
-git clone https://github.com/jforsythe/jig.git
-cd jig
-go build ./...
-go test ./...
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution guidelines.
 
-Bug reports and pull requests are welcome at [github.com/jforsythe/jig](https://github.com/jforsythe/jig).
+Bug reports and pull requests are welcome at [github.com/jdforsythe/jig](https://github.com/jdforsythe/jig).
 
 ---
 
