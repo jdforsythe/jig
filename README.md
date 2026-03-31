@@ -1,7 +1,7 @@
 # jig
 
-![CI](https://github.com/jforsythe/jig/actions/workflows/ci.yml/badge.svg)
-[![Go Report Card](https://goreportcard.com/badge/github.com/jforsythe/jig)](https://goreportcard.com/report/github.com/jforsythe/jig)
+![CI](https://github.com/jdforsythe/jig/actions/workflows/ci.yml/badge.svg)
+[![Go Report Card](https://goreportcard.com/badge/github.com/jdforsythe/jig)](https://goreportcard.com/report/github.com/jdforsythe/jig)
 [![Go Version](https://img.shields.io/badge/go-%3E%3D1.23-blue)](https://go.dev/dl/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 

@@ -1,6 +1,6 @@
 package claude
 
-import "github.com/jforsythe/jig/internal/config"
+import "github.com/jdforsythe/jig/internal/config"
 
 // BuildCLIArgs constructs the claude CLI argument slice from a resolved profile.
 // settingsPath points to the jig-generated settings file (always non-empty).

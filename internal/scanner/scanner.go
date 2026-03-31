@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jforsythe/jig/internal/plugin"
+	"github.com/jdforsythe/jig/internal/plugin"
 )
 
 // Discovery holds all discovered resources.

@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jforsythe/jig/internal/claude"
-	"github.com/jforsythe/jig/internal/config"
-	"github.com/jforsythe/jig/internal/scanner"
-	"github.com/jforsythe/jig/internal/tui"
+	"github.com/jdforsythe/jig/internal/claude"
+	"github.com/jdforsythe/jig/internal/config"
+	"github.com/jdforsythe/jig/internal/scanner"
+	"github.com/jdforsythe/jig/internal/tui"
 )
 
 func runTUI() error {

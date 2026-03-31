@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jforsythe/jig/internal/config"
+	"github.com/jdforsythe/jig/internal/config"
 )
 
 func TestGeneratePluginDir_SkillSymlinks(t *testing.T) {

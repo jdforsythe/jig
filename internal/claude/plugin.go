@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jforsythe/jig/internal/config"
-	"github.com/jforsythe/jig/internal/plugin"
+	"github.com/jdforsythe/jig/internal/config"
+	"github.com/jdforsythe/jig/internal/plugin"
 )
 
 // PluginManifest is the minimal plugin.json for Claude's plugin system.

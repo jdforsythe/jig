@@ -6,9 +6,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jforsythe/jig/internal/config"
-	"github.com/jforsythe/jig/internal/scanner"
-	"github.com/jforsythe/jig/internal/tui/shared"
+	"github.com/jdforsythe/jig/internal/config"
+	"github.com/jdforsythe/jig/internal/scanner"
+	"github.com/jdforsythe/jig/internal/tui/shared"
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────

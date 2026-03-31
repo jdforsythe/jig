@@ -40,7 +40,7 @@ You are a senior Go developer responsible for building a complete terminal appli
    OUTPUT: Config schema specification.
 
 2. Scaffold the Go project.
-   Initialize Go module (`github.com/jforsythe/jig`). Set up directory structure:
+   Initialize Go module (`github.com/jdforsythe/jig`). Set up directory structure:
    ```
    cmd/jig/         — Cobra commands (main.go, root.go, run.go, profiles.go, init.go, doctor.go)
    internal/config/  — Profile struct, CRUD, loading, merging, validation

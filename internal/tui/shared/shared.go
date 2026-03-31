@@ -2,7 +2,7 @@ package shared
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jforsythe/jig/internal/config"
+	"github.com/jdforsythe/jig/internal/config"
 )
 
 // Screen identifiers.

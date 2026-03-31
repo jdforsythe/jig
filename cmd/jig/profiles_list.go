@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jforsythe/jig/internal/config"
+	"github.com/jdforsythe/jig/internal/config"
 	"github.com/spf13/cobra"
 )
 
