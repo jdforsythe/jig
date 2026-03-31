@@ -1,14 +1,14 @@
 # Homebrew Distribution Plan
 
 ## Goal
-Ship `jig` as a Homebrew-installable binary via a personal tap (`jforsythe/jig`) using goreleaser and GitHub Actions. Target: `v0.1.0`.
+Ship `jig` as a Homebrew-installable binary via a personal tap (`jdforsythe/jig`) using goreleaser and GitHub Actions. Target: `v0.1.0`.
 
 ---
 
 ## Prerequisites
 
-- [ ] `github.com/jforsythe/jig` is public
-- [ ] Create `github.com/jforsythe/homebrew-jig` (empty public repo — goreleaser populates it)
+- [ ] `github.com/jdforsythe/jig` is public
+- [ ] Create `github.com/jdforsythe/homebrew-jig` (empty public repo — goreleaser populates it)
 - [ ] Generate a GitHub PAT with `repo` scope; add as secret `HOMEBREW_TAP_GITHUB_TOKEN` in the `jig` repo
 
 ---
@@ -58,10 +58,10 @@ changelog:
 brews:
   - name: jig
     repository:
-      owner: jforsythe
+      owner: jdforsythe
       name: homebrew-jig
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: https://github.com/jforsythe/jig
+    homepage: https://github.com/jdforsythe/jig
     description: "Claude Code session configurator — manage profiles, MCP servers, and launch settings via a terminal UI"
     license: MIT
     install: |
@@ -123,15 +123,15 @@ git push origin v0.1.0
 GitHub Actions runs goreleaser, which:
 1. Builds 5 binaries (darwin/amd64, darwin/arm64, linux/amd64, linux/arm64, windows/amd64)
 2. Creates `jig_Darwin_arm64.tar.gz` etc. and `checksums.txt`
-3. Creates a GitHub Release at `github.com/jforsythe/jig/releases/tag/v0.1.0`
-4. Commits a `Formula/jig.rb` to `github.com/jforsythe/homebrew-jig`
+3. Creates a GitHub Release at `github.com/jdforsythe/jig/releases/tag/v0.1.0`
+4. Commits a `Formula/jig.rb` to `github.com/jdforsythe/homebrew-jig`
 
 ---
 
 ## Step 4 — Verify install
 
 ```bash
-brew tap jforsythe/jig
+brew tap jdforsythe/jig
 brew install jig
 jig --version
 ```
@@ -141,17 +141,17 @@ jig --version
 ## User-facing install instructions (for README)
 
 ```bash
-brew install jforsythe/jig/jig
+brew install jdforsythe/jig/jig
 ```
 or
 ```bash
-brew tap jforsythe/jig
+brew tap jdforsythe/jig
 brew install jig
 ```
 
 Go developers can also use:
 ```bash
-go install github.com/jforsythe/jig@latest
+go install github.com/jdforsythe/jig@latest
 ```
 
 ---

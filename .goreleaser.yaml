@@ -38,10 +38,10 @@ changelog:
 brews:
   - name: jig
     repository:
-      owner: jforsythe
+      owner: jdforsythe
       name: homebrew-jig
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: https://github.com/jforsythe/jig
+    homepage: https://github.com/jdforsythe/jig
     description: "Claude Code session configurator — manage profiles, MCP servers, and launch settings via a terminal UI"
     license: MIT
     install: |
