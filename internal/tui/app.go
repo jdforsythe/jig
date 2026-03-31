@@ -170,8 +170,9 @@ func (a *App) switchScreen(msg shared.SwitchScreenMsg) (*App, tea.Cmd) {
 		if p == nil {
 			p = &config.Profile{}
 		}
+		disc, _ := scanner.Scan(a.cwd)
 		plugins, _ := plugin.Resolve() // non-fatal
-		a.editor = screens.NewEditor(p, a.cwd, plugins, a.theme.Title, a.theme.ActiveTab, a.theme.Tab, a.theme.Normal, a.theme.Dimmed, a.theme.StatusBar, a.theme.StatusKey, a.theme.Accent)
+		a.editor = screens.NewEditor(p, a.cwd, disc, plugins, a.theme.Title, a.theme.ActiveTab, a.theme.Tab, a.theme.Normal, a.theme.Dimmed, a.theme.StatusBar, a.theme.StatusKey, a.theme.Accent)
 		a.editor = a.editor.SetSize(a.width, a.height)
 
 	case shared.ScreenPreview:

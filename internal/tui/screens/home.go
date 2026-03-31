@@ -117,10 +117,7 @@ func (m HomeModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m HomeModel) View() string {
 	var b strings.Builder
 
-	// Title
-	title := m.titleStyle.Render("  jig")
-	subtitle := m.dimStyle.Render(" - Claude Code Session Configurator")
-	b.WriteString("\n" + title + subtitle + "\n\n")
+	b.WriteString(shared.RenderHeader(m.titleStyle, m.dimStyle, ""))
 
 	if len(m.profiles) == 0 {
 		b.WriteString("  No profiles found.\n")

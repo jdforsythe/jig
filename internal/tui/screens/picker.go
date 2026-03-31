@@ -252,12 +252,11 @@ func (m PickerModel) SelectedItems() []PickerItem {
 func (m PickerModel) View() string {
 	var b strings.Builder
 
-	b.WriteString("\n  " + m.titleStyle.Render("Ad-hoc Picker") + "\n")
+	b.WriteString(shared.RenderHeader(m.titleStyle, m.dimStyle, "Ad-hoc Picker"))
 
 	if m.filtering {
-		b.WriteString("  " + m.accentStyle.Render("/") + m.filter + "█\n")
+		b.WriteString("  " + m.accentStyle.Render("/") + m.filter + "█\n\n")
 	}
-	b.WriteString("\n")
 
 	// Group items by category, then by source within each category
 	lastCat := ""

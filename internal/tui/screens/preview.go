@@ -109,11 +109,11 @@ func (m PreviewModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m PreviewModel) View() string {
 	var b strings.Builder
 
-	b.WriteString("\n  " + m.titleStyle.Render("Preview: "+m.profile.Name) + "\n\n")
+	b.WriteString(shared.RenderHeader(m.titleStyle, m.dimStyle, "Preview: "+m.profile.Name))
 
 	// Scrollable content
 	lines := strings.Split(m.content, "\n")
-	viewHeight := m.height - 6
+	viewHeight := m.height - 8
 	if viewHeight < 5 {
 		viewHeight = 20
 	}

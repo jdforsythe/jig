@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jforsythe/jig/internal/config"
 	"github.com/jforsythe/jig/internal/plugin"
+	"github.com/jforsythe/jig/internal/scanner"
 	"github.com/jforsythe/jig/internal/tui/shared"
 )
 
@@ -19,11 +20,12 @@ const (
 	TabTools
 	TabMCP
 	TabHooks
-	TabAdvanced
+	TabComponents
 	TabPlugins
+	TabAdvanced
 )
 
-var tabNames = []string{"General", "Tools", "MCP Servers", "Hooks", "Advanced", "Plugins"}
+var tabNames = []string{"General", "Tools", "MCP Servers", "Hooks", "Components", "Plugins", "Advanced"}
 
 // Field represents an editable field.
 type Field struct {
@@ -67,10 +69,18 @@ type EditorModel struct {
 	compItems        []pluginCompItem
 	compCursor       int
 	compScrollOffset int
+
+	// Components tab state
+	disc          *scanner.Discovery
+	discItems     []PickerItem
+	discFiltered  []int
+	discCursor    int
+	discFilter    string
+	discFiltering bool
 }
 
 // NewEditor creates the editor screen.
-func NewEditor(p *config.Profile, cwd string, plugins []*plugin.PluginInfo, titleStyle, activeTabStyle, tabStyle, normalStyle, dimStyle, statusStyle, statusKey, accentStyle lipgloss.Style) EditorModel {
+func NewEditor(p *config.Profile, cwd string, disc *scanner.Discovery, plugins []*plugin.PluginInfo, titleStyle, activeTabStyle, tabStyle, normalStyle, dimStyle, statusStyle, statusKey, accentStyle lipgloss.Style) EditorModel {
 	isNew := p.Name == ""
 	if isNew {
 		p = &config.Profile{Name: "new-profile"}
@@ -81,6 +91,7 @@ func NewEditor(p *config.Profile, cwd string, plugins []*plugin.PluginInfo, titl
 		cwd:            cwd,
 		isNew:          isNew,
 		origName:       p.Name,
+		disc:           disc,
 		plugins:        plugins,
 		titleStyle:     titleStyle,
 		activeTabStyle: activeTabStyle,
@@ -91,6 +102,7 @@ func NewEditor(p *config.Profile, cwd string, plugins []*plugin.PluginInfo, titl
 		statusKey:      statusKey,
 		accentStyle:    accentStyle,
 	}
+	m.buildDiscItems()
 	m.buildFields()
 	return m
 }
@@ -121,12 +133,84 @@ func (m *EditorModel) buildFields() {
 			{Label: "System Prompt", Value: m.profile.SystemPrompt},
 			{Label: "Append System Prompt", Value: m.profile.AppendSystemPrompt},
 		},
+		// Components — no fields; handled by custom rendering
+		{},
+		// Plugins — no fields; handled by custom rendering
+		{},
 		// Advanced
 		{
 			{Label: "Extra Flags", Value: strings.Join(m.profile.ExtraFlags, " ")},
 		},
-		// Plugins — no fields; handled by custom rendering
-		{},
+	}
+}
+
+func (m *EditorModel) buildDiscItems() {
+	if m.disc == nil {
+		m.applyDiscFilter()
+		return
+	}
+	for _, s := range m.disc.Skills {
+		if isPluginSource(s.Source) {
+			continue
+		}
+		m.discItems = append(m.discItems, PickerItem{
+			Name:     s.Name,
+			Category: "Skill",
+			Source:   s.Source,
+			Path:     s.Path,
+			Selected: pathEntryContains(m.profile.Skills, s.Path),
+		})
+	}
+	for _, a := range m.disc.Agents {
+		if isPluginSource(a.Source) {
+			continue
+		}
+		m.discItems = append(m.discItems, PickerItem{
+			Name:     a.Name,
+			Category: "Agent",
+			Source:   a.Source,
+			Path:     a.Path,
+			Selected: pathEntryContains(m.profile.Agents, a.Path),
+		})
+	}
+	for _, c := range m.disc.Commands {
+		if isPluginSource(c.Source) {
+			continue
+		}
+		m.discItems = append(m.discItems, PickerItem{
+			Name:     c.Name,
+			Category: "Command",
+			Source:   c.Source,
+			Path:     c.Path,
+			Selected: pathEntryContains(m.profile.Commands, c.Path),
+		})
+	}
+	m.applyDiscFilter()
+}
+
+func pathEntryContains(entries []config.PathEntry, path string) bool {
+	for _, e := range entries {
+		if e.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *EditorModel) applyDiscFilter() {
+	m.discFiltered = nil
+	for i, item := range m.discItems {
+		if m.discFilter == "" ||
+			strings.Contains(strings.ToLower(item.Name), strings.ToLower(m.discFilter)) ||
+			strings.Contains(strings.ToLower(item.Category), strings.ToLower(m.discFilter)) {
+			m.discFiltered = append(m.discFiltered, i)
+		}
+	}
+	if m.discCursor >= len(m.discFiltered) {
+		m.discCursor = len(m.discFiltered) - 1
+	}
+	if m.discCursor < 0 {
+		m.discCursor = 0
 	}
 }
 
@@ -157,9 +241,12 @@ func (m EditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEditing(msg)
 		}
 
-		// Plugins tab has custom key handling
+		// Plugins and Components tabs have custom key handling
 		if m.activeTab == TabPlugins {
 			return m.updatePluginsTab(msg)
+		}
+		if m.activeTab == TabComponents {
+			return m.updateComponentsTab(msg)
 		}
 
 		switch msg.String() {
@@ -308,6 +395,72 @@ func (m EditorModel) updatePluginsTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateComponentsTab handles key input on the Components tab.
+func (m EditorModel) updateComponentsTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.discFiltering {
+		return m.updateDiscFilter(msg)
+	}
+	switch msg.String() {
+	case shared.KeyTab:
+		m.activeTab = Tab((int(m.activeTab) + 1) % len(tabNames))
+		m.discCursor = 0
+	case shared.KeyShiftTab:
+		m.activeTab = Tab((int(m.activeTab) - 1 + len(tabNames)) % len(tabNames))
+		m.discCursor = 0
+	case shared.KeyUp, "k":
+		if m.discCursor > 0 {
+			m.discCursor--
+		}
+	case shared.KeyDown, "j":
+		if m.discCursor < len(m.discFiltered)-1 {
+			m.discCursor++
+		}
+	case shared.KeySpace:
+		if len(m.discFiltered) > 0 {
+			idx := m.discFiltered[m.discCursor]
+			m.discItems[idx].Selected = !m.discItems[idx].Selected
+		}
+	case shared.KeySlash:
+		m.discFiltering = true
+		m.discFilter = ""
+	case "s":
+		m.applyFields()
+		global := m.profile.Source() == config.SourceGlobal
+		if err := config.SaveProfile(m.profile, m.cwd, global); err != nil {
+			return m, func() tea.Msg { return shared.ErrorMsg{Err: err} }
+		}
+		if !m.isNew && m.origName != "" && m.origName != m.profile.Name {
+			_ = config.DeleteProfile(m.origName, m.cwd, global)
+		}
+		return m, func() tea.Msg {
+			return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
+		}
+	case shared.KeyEsc:
+		return m, func() tea.Msg {
+			return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
+		}
+	}
+	return m, nil
+}
+
+func (m EditorModel) updateDiscFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case shared.KeyEnter, shared.KeyEsc:
+		m.discFiltering = false
+	case "backspace":
+		if len(m.discFilter) > 0 {
+			m.discFilter = m.discFilter[:len(m.discFilter)-1]
+			m.applyDiscFilter()
+		}
+	default:
+		if len(msg.String()) == 1 {
+			m.discFilter += msg.String()
+			m.applyDiscFilter()
+		}
+	}
+	return m, nil
+}
+
 func (m EditorModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case shared.KeyEnter:
@@ -363,6 +516,24 @@ func (m *EditorModel) applyFields() {
 	advanced := m.fields[TabAdvanced]
 	m.profile.ExtraFlags = splitCSV(advanced[0].Value)
 	// Plugins tab changes are applied directly to m.profile as they happen
+	// Apply component selections from the Components tab
+	var skills, agents, commands []config.PathEntry
+	for _, item := range m.discItems {
+		if !item.Selected {
+			continue
+		}
+		switch item.Category {
+		case "Skill":
+			skills = append(skills, config.PathEntry{Path: item.Path})
+		case "Agent":
+			agents = append(agents, config.PathEntry{Path: item.Path})
+		case "Command":
+			commands = append(commands, config.PathEntry{Path: item.Path})
+		}
+	}
+	m.profile.Skills = skills
+	m.profile.Agents = agents
+	m.profile.Commands = commands
 }
 
 // togglePluginEnabled toggles whether a plugin is fully enabled.
@@ -416,8 +587,8 @@ func (m *EditorModel) isComponentSelected(category, name string) bool {
 
 // clampCompScroll adjusts compScrollOffset to keep compCursor visible.
 func (m *EditorModel) clampCompScroll() {
-	// Approximate visible rows: height minus header/footer/tabs overhead (~8 lines).
-	visible := m.height - 8
+	// Approximate visible rows: height minus header/footer/tabs overhead (~10 lines).
+	visible := m.height - 10
 	if visible < 4 {
 		visible = 4
 	}
@@ -485,12 +656,11 @@ func splitCSV(s string) []string {
 func (m EditorModel) View() string {
 	var b strings.Builder
 
-	// Title
 	action := "Edit"
 	if m.isNew {
 		action = "New"
 	}
-	b.WriteString("\n  " + m.titleStyle.Render(fmt.Sprintf("%s Profile: %s", action, m.profile.Name)) + "\n\n")
+	b.WriteString(shared.RenderHeader(m.titleStyle, m.dimStyle, fmt.Sprintf("%s Profile: %s", action, m.profile.Name)))
 
 	// Tabs
 	var tabs []string
@@ -512,6 +682,8 @@ func (m EditorModel) View() string {
 	// Render tab content
 	if m.activeTab == TabPlugins {
 		b.WriteString(m.viewPluginsTab())
+	} else if m.activeTab == TabComponents {
+		b.WriteString(m.viewComponentsTab())
 	} else {
 		fields := m.fields[m.activeTab]
 		for i, f := range fields {
@@ -560,6 +732,13 @@ func (m EditorModel) View() string {
 				m.statusKey.Render("esc") + " back",
 			}
 		}
+	} else if m.activeTab == TabComponents {
+		keys = []string{
+			m.statusKey.Render("space") + " toggle",
+			m.statusKey.Render("/") + " filter",
+			m.statusKey.Render("s") + " save",
+			m.statusKey.Render("esc") + " back",
+		}
 	} else if m.editing {
 		keys = []string{
 			m.statusKey.Render("enter") + " confirm",
@@ -577,6 +756,57 @@ func (m EditorModel) View() string {
 		b.WriteString(m.statusStyle.Width(m.width).Render(strings.Join(keys, "  ")))
 	} else {
 		b.WriteString(m.statusStyle.Render(strings.Join(keys, "  ")))
+	}
+
+	return b.String()
+}
+
+func (m EditorModel) viewComponentsTab() string {
+	var b strings.Builder
+
+	if m.discFiltering {
+		b.WriteString("  " + m.accentStyle.Render("/") + m.discFilter + "█\n\n")
+	}
+
+	if len(m.discItems) == 0 {
+		b.WriteString("  " + m.dimStyle.Render("No resources discovered.") + "\n")
+		return b.String()
+	}
+
+	lastCat := ""
+	lastSrc := ""
+	for i, idx := range m.discFiltered {
+		item := m.discItems[idx]
+
+		if item.Category != lastCat {
+			if lastCat != "" {
+				b.WriteString("\n")
+			}
+			b.WriteString("  " + m.accentStyle.Render(item.Category) + "\n")
+			lastCat = item.Category
+			lastSrc = ""
+		}
+
+		if item.Source != "" && item.Source != lastSrc {
+			b.WriteString("  " + m.dimStyle.Render("── "+sourceLabel(item.Source)+" ──") + "\n")
+			lastSrc = item.Source
+		}
+
+		cursor := "  "
+		if i == m.discCursor {
+			cursor = m.accentStyle.Render("> ")
+		}
+
+		check := m.dimStyle.Render("[ ]")
+		if item.Selected {
+			check = m.accentStyle.Render("[✓]")
+		}
+
+		b.WriteString(fmt.Sprintf("  %s%s %s\n", cursor, check, item.Name))
+	}
+
+	if len(m.discFiltered) == 0 {
+		b.WriteString("  " + m.dimStyle.Render("No items match filter.") + "\n")
 	}
 
 	return b.String()
@@ -600,7 +830,7 @@ func (m EditorModel) viewPluginsTab() string {
 			return b.String()
 		}
 
-		visible := m.height - 8
+		visible := m.height - 10
 		if visible < 4 {
 			visible = 4
 		}
