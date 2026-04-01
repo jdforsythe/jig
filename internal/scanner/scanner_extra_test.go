@@ -178,3 +178,144 @@ func TestExtractMCPServerNames_NestedValues(t *testing.T) {
 		t.Errorf("got %d names, want 2: %v", len(names), names)
 	}
 }
+
+func TestScan_UserLevelMCPFromClaudeJSON(t *testing.T) {
+	homeDir := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	claudeJSON := `{"mcpServers":{"user-srv":{"command":"node"}}}`
+	if err := os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte(claudeJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	disc, err := Scan(cwd)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	srcMap := make(map[string]string)
+	for _, s := range disc.MCPServers {
+		srcMap[s.Name] = s.Source
+	}
+	if srcMap["user-srv"] != "user" {
+		t.Errorf("user-srv source = %q, want user", srcMap["user-srv"])
+	}
+}
+
+func TestScan_ClaudeJSONTakesPriorityOverLegacy(t *testing.T) {
+	homeDir := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	claudeJSON := `{"mcpServers":{"shared-srv":{"command":"node"}}}`
+	if err := os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte(claudeJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	legacyDir := filepath.Join(homeDir, ".claude")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	legacyMCP := `{"mcpServers":{"shared-srv":{"command":"python"}}}`
+	if err := os.WriteFile(filepath.Join(legacyDir, ".mcp.json"), []byte(legacyMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	disc, err := Scan(cwd)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	count := 0
+	for _, s := range disc.MCPServers {
+		if s.Name == "shared-srv" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("shared-srv appears %d times, want 1 (dedup across files)", count)
+	}
+}
+
+func TestScan_MCPSourceLabels(t *testing.T) {
+	homeDir := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	claudeJSON := `{"mcpServers":{"user-srv":{"command":"node"}}}`
+	if err := os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte(claudeJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	projMCP := `{"mcpServers":{"proj-srv":{"command":"python"}}}`
+	if err := os.WriteFile(filepath.Join(cwd, ".mcp.json"), []byte(projMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	disc, err := Scan(cwd)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	srcMap := make(map[string]string)
+	for _, s := range disc.MCPServers {
+		srcMap[s.Name] = s.Source
+	}
+	if srcMap["user-srv"] != "user" {
+		t.Errorf("user-srv source = %q, want user (not a file path)", srcMap["user-srv"])
+	}
+	if srcMap["proj-srv"] != "project" {
+		t.Errorf("proj-srv source = %q, want project (not a file path)", srcMap["proj-srv"])
+	}
+}
+
+func TestScan_MCPDeduplicatesAcrossFiles(t *testing.T) {
+	homeDir := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	claudeJSON := `{"mcpServers":{"shared-srv":{"command":"node"}}}`
+	if err := os.WriteFile(filepath.Join(homeDir, ".claude.json"), []byte(claudeJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+	projMCP := `{"mcpServers":{"shared-srv":{"command":"python"}}}`
+	if err := os.WriteFile(filepath.Join(cwd, ".mcp.json"), []byte(projMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	disc, err := Scan(cwd)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	if len(disc.MCPServers) != 1 {
+		t.Errorf("MCPServers len = %d, want 1 (dedup across files)", len(disc.MCPServers))
+	}
+}
+
+func TestScan_LegacyUserMCPStillWorks(t *testing.T) {
+	homeDir := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	legacyDir := filepath.Join(homeDir, ".claude")
+	if err := os.MkdirAll(legacyDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	legacyMCP := `{"mcpServers":{"legacy-srv":{"command":"node"}}}`
+	if err := os.WriteFile(filepath.Join(legacyDir, ".mcp.json"), []byte(legacyMCP), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	disc, err := Scan(cwd)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	srcMap := make(map[string]string)
+	for _, s := range disc.MCPServers {
+		srcMap[s.Name] = s.Source
+	}
+	if srcMap["legacy-srv"] != "user" {
+		t.Errorf("legacy-srv source = %q, want user", srcMap["legacy-srv"])
+	}
+}
