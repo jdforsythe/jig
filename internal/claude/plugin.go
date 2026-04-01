@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jdforsythe/jig/internal/config"
 	"github.com/jdforsythe/jig/internal/plugin"
@@ -95,7 +96,10 @@ func GeneratePluginDir(p *config.Profile, mcpIndex *MCPIndex) (pluginDir, settin
 		}
 		for _, s := range p.Skills {
 			src := expandPath(s.Path)
-			name := filepath.Base(src)
+			name, nameErr := safeBaseName(src)
+			if nameErr != nil {
+				return "", "", fmt.Errorf("invalid skill path %q: %w", s.Path, nameErr)
+			}
 			if err = os.Symlink(src, filepath.Join(skillsDir, name)); err != nil {
 				return "", "", fmt.Errorf("symlinking skill %s: %w", s.Path, err)
 			}
@@ -110,7 +114,10 @@ func GeneratePluginDir(p *config.Profile, mcpIndex *MCPIndex) (pluginDir, settin
 		}
 		for _, a := range p.Agents {
 			src := expandPath(a.Path)
-			name := filepath.Base(src)
+			name, nameErr := safeBaseName(src)
+			if nameErr != nil {
+				return "", "", fmt.Errorf("invalid agent path %q: %w", a.Path, nameErr)
+			}
 			if err = os.Symlink(src, filepath.Join(agentsDir, name)); err != nil {
 				return "", "", fmt.Errorf("symlinking agent %s: %w", a.Path, err)
 			}
@@ -125,7 +132,10 @@ func GeneratePluginDir(p *config.Profile, mcpIndex *MCPIndex) (pluginDir, settin
 		}
 		for _, c := range p.Commands {
 			src := expandPath(c.Path)
-			name := filepath.Base(src)
+			name, nameErr := safeBaseName(src)
+			if nameErr != nil {
+				return "", "", fmt.Errorf("invalid command path %q: %w", c.Path, nameErr)
+			}
 			if err = os.Symlink(src, filepath.Join(commandsDir, name)); err != nil {
 				return "", "", fmt.Errorf("symlinking command %s: %w", c.Path, err)
 			}
@@ -146,11 +156,15 @@ func GeneratePluginDir(p *config.Profile, mcpIndex *MCPIndex) (pluginDir, settin
 					return "", "", err
 				}
 				for _, name := range sel.Agents {
-					src := filepath.Join(installPath, "agents", name)
-					dest := filepath.Join(agentsDir, name)
+					safeName, nameErr := safeComponentName(name)
+					if nameErr != nil {
+						return "", "", fmt.Errorf("invalid plugin agent name %q for %q: %w", name, pluginKey, nameErr)
+					}
+					src := filepath.Join(installPath, "agents", safeName)
+					dest := filepath.Join(agentsDir, safeName)
 					if _, statErr := os.Lstat(dest); os.IsNotExist(statErr) {
 						if err = os.Symlink(src, dest); err != nil {
-							return "", "", fmt.Errorf("symlinking plugin agent %s/%s: %w", pluginKey, name, err)
+							return "", "", fmt.Errorf("symlinking plugin agent %s/%s: %w", pluginKey, safeName, err)
 						}
 					}
 				}
@@ -162,11 +176,15 @@ func GeneratePluginDir(p *config.Profile, mcpIndex *MCPIndex) (pluginDir, settin
 					return "", "", err
 				}
 				for _, name := range sel.Skills {
-					src := filepath.Join(installPath, "skills", name)
-					dest := filepath.Join(skillsDir, name)
+					safeName, nameErr := safeComponentName(name)
+					if nameErr != nil {
+						return "", "", fmt.Errorf("invalid plugin skill name %q for %q: %w", name, pluginKey, nameErr)
+					}
+					src := filepath.Join(installPath, "skills", safeName)
+					dest := filepath.Join(skillsDir, safeName)
 					if _, statErr := os.Lstat(dest); os.IsNotExist(statErr) {
 						if err = os.Symlink(src, dest); err != nil {
-							return "", "", fmt.Errorf("symlinking plugin skill %s/%s: %w", pluginKey, name, err)
+							return "", "", fmt.Errorf("symlinking plugin skill %s/%s: %w", pluginKey, safeName, err)
 						}
 					}
 				}
@@ -178,11 +196,15 @@ func GeneratePluginDir(p *config.Profile, mcpIndex *MCPIndex) (pluginDir, settin
 					return "", "", err
 				}
 				for _, name := range sel.Commands {
-					src := filepath.Join(installPath, "commands", name)
-					dest := filepath.Join(commandsDir, name)
+					safeName, nameErr := safeComponentName(name)
+					if nameErr != nil {
+						return "", "", fmt.Errorf("invalid plugin command name %q for %q: %w", name, pluginKey, nameErr)
+					}
+					src := filepath.Join(installPath, "commands", safeName)
+					dest := filepath.Join(commandsDir, safeName)
 					if _, statErr := os.Lstat(dest); os.IsNotExist(statErr) {
 						if err = os.Symlink(src, dest); err != nil {
-							return "", "", fmt.Errorf("symlinking plugin command %s/%s: %w", pluginKey, name, err)
+							return "", "", fmt.Errorf("symlinking plugin command %s/%s: %w", pluginKey, safeName, err)
 						}
 					}
 				}
@@ -228,7 +250,10 @@ func GeneratePluginDir(p *config.Profile, mcpIndex *MCPIndex) (pluginDir, settin
 	// Copy hook scripts
 	for _, hs := range p.HookScripts {
 		src := expandPath(hs.Path)
-		dest := filepath.Join(tmpDir, hs.Dest)
+		dest, joinErr := safeJoinWithin(tmpDir, hs.Dest)
+		if joinErr != nil {
+			return "", "", fmt.Errorf("invalid hook script destination %q: %w", hs.Dest, joinErr)
+		}
 		if err = os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
 			return "", "", err
 		}
@@ -284,4 +309,51 @@ func expandPath(path string) string {
 		}
 	}
 	return path
+}
+
+func safeBaseName(path string) (string, error) {
+	name := filepath.Base(path)
+	return safeComponentName(name)
+}
+
+func safeComponentName(name string) (string, error) {
+	if name == "" || name == "." || name == ".." {
+		return "", fmt.Errorf("name must not be empty, '.' or '..'")
+	}
+	if filepath.IsAbs(name) {
+		return "", fmt.Errorf("absolute paths are not allowed")
+	}
+	if filepath.Base(name) != name {
+		return "", fmt.Errorf("path separators are not allowed")
+	}
+	if strings.Contains(name, "\\") || strings.Contains(name, "/") {
+		return "", fmt.Errorf("path separators are not allowed")
+	}
+	return name, nil
+}
+
+func safeJoinWithin(baseDir, rel string) (string, error) {
+	if rel == "" {
+		return "", fmt.Errorf("destination must not be empty")
+	}
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("absolute destination paths are not allowed")
+	}
+
+	cleanRel := filepath.Clean(rel)
+	if cleanRel == "." || cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("destination escapes plugin directory")
+	}
+
+	baseClean := filepath.Clean(baseDir)
+	dest := filepath.Join(baseClean, cleanRel)
+	relToBase, err := filepath.Rel(baseClean, dest)
+	if err != nil {
+		return "", err
+	}
+	if relToBase == ".." || strings.HasPrefix(relToBase, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("destination escapes plugin directory")
+	}
+
+	return dest, nil
 }
