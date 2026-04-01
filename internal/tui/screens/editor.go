@@ -29,9 +29,10 @@ var tabNames = []string{"General", "Tools", "MCP Servers", "Hooks", "Components"
 
 // Field represents an editable field.
 type Field struct {
-	Label   string
-	Value   string
-	Options []string // if non-nil, this is a select field
+	Label    string
+	Value    string
+	Options  []string // if non-nil, this is a select field
+	Disabled bool     // if true, field is read-only
 }
 
 // pluginCompItem is a selectable component within a plugin.
@@ -45,6 +46,7 @@ type EditorModel struct {
 	profile        *config.Profile
 	cwd            string
 	isNew          bool
+	pickerMode     bool   // true when used as ad-hoc picker (--pick), no save to disk
 	origName       string // original profile name before editing
 	activeTab      Tab
 	fieldCursor    int
@@ -107,12 +109,38 @@ func NewEditor(p *config.Profile, cwd string, disc *scanner.Discovery, plugins [
 	return m
 }
 
+// NewEditorPicker creates a picker-mode editor for jig run --pick.
+// Name and Description are locked; pressing s launches the ad-hoc profile instead of saving.
+func NewEditorPicker(cwd string, disc *scanner.Discovery, plugins []*plugin.PluginInfo, titleStyle, activeTabStyle, tabStyle, normalStyle, dimStyle, statusStyle, statusKey, accentStyle lipgloss.Style) EditorModel {
+	p := &config.Profile{Name: "ad-hoc", Effort: "high", PermissionMode: "default"}
+	m := EditorModel{
+		profile:        p,
+		cwd:            cwd,
+		isNew:          true,
+		pickerMode:     true,
+		origName:       "ad-hoc",
+		disc:           disc,
+		plugins:        plugins,
+		titleStyle:     titleStyle,
+		activeTabStyle: activeTabStyle,
+		tabStyle:       tabStyle,
+		normalStyle:    normalStyle,
+		dimStyle:       dimStyle,
+		statusStyle:    statusStyle,
+		statusKey:      statusKey,
+		accentStyle:    accentStyle,
+	}
+	m.buildDiscItems()
+	m.buildFields()
+	return m
+}
+
 func (m *EditorModel) buildFields() {
 	m.fields = [][]Field{
 		// General
 		{
-			{Label: "Name", Value: m.profile.Name},
-			{Label: "Description", Value: m.profile.Description},
+			{Label: "Name", Value: m.profile.Name, Disabled: m.pickerMode},
+			{Label: "Description", Value: m.profile.Description, Disabled: m.pickerMode},
 			{Label: "Extends", Value: m.profile.Extends},
 			{Label: "Model", Value: m.profile.Model, Options: append([]string{""}, config.ValidModels...)},
 			{Label: "Effort", Value: m.profile.Effort, Options: append([]string{""}, config.ValidEfforts...)},
@@ -148,6 +176,17 @@ func (m *EditorModel) buildDiscItems() {
 	if m.disc == nil {
 		m.applyDiscFilter()
 		return
+	}
+	for _, s := range m.disc.MCPServers {
+		if isPluginSource(s.Source) {
+			continue
+		}
+		m.discItems = append(m.discItems, PickerItem{
+			Name:     s.Name,
+			Category: "MCP Server",
+			Source:   s.Source,
+			Selected: mcpServerRefContains(m.profile.MCPServers, s.Name),
+		})
 	}
 	for _, s := range m.disc.Skills {
 		if isPluginSource(s.Source) {
@@ -186,6 +225,15 @@ func (m *EditorModel) buildDiscItems() {
 		})
 	}
 	m.applyDiscFilter()
+}
+
+func mcpServerRefContains(entries []config.MCPServerEntry, name string) bool {
+	for _, e := range entries {
+		if e.Ref == name || e.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func pathEntryContains(entries []config.PathEntry, path string) bool {
@@ -271,8 +319,11 @@ func (m EditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.fieldCursor = 0
 			}
 		case shared.KeyEnter:
-			m.editing = true
 			field := m.fields[m.activeTab][m.fieldCursor]
+			if field.Disabled {
+				break
+			}
+			m.editing = true
 			if field.Options != nil {
 				m.cycleOption()
 				m.editing = false
@@ -280,22 +331,9 @@ func (m EditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.editBuffer = field.Value
 			}
 		case "s":
-			m.applyFields()
-			global := m.profile.Source() == config.SourceGlobal
-			if err := config.SaveProfile(m.profile, m.cwd, global); err != nil {
-				return m, func() tea.Msg { return shared.ErrorMsg{Err: err} }
-			}
-			// If renaming an existing profile, delete the old file.
-			if !m.isNew && m.origName != "" && m.origName != m.profile.Name {
-				_ = config.DeleteProfile(m.origName, m.cwd, global)
-			}
-			return m, func() tea.Msg {
-				return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
-			}
+			return m.handleSave()
 		case shared.KeyEsc:
-			return m, func() tea.Msg {
-				return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
-			}
+			return m.handleBack()
 		}
 	}
 	return m, nil
@@ -358,10 +396,7 @@ func (m EditorModel) updatePluginsTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.compCursor = 0
 			m.compScrollOffset = 0
 		} else {
-			// Esc from plugin list → back to home
-			return m, func() tea.Msg {
-				return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
-			}
+			return m.handleBack()
 		}
 
 	case "f":
@@ -379,17 +414,7 @@ func (m EditorModel) updatePluginsTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "s":
-		m.applyFields()
-		global := m.profile.Source() == config.SourceGlobal
-		if err := config.SaveProfile(m.profile, m.cwd, global); err != nil {
-			return m, func() tea.Msg { return shared.ErrorMsg{Err: err} }
-		}
-		if !m.isNew && m.origName != "" && m.origName != m.profile.Name {
-			_ = config.DeleteProfile(m.origName, m.cwd, global)
-		}
-		return m, func() tea.Msg {
-			return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
-		}
+		return m.handleSave()
 	}
 
 	return m, nil
@@ -424,21 +449,9 @@ func (m EditorModel) updateComponentsTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.discFiltering = true
 		m.discFilter = ""
 	case "s":
-		m.applyFields()
-		global := m.profile.Source() == config.SourceGlobal
-		if err := config.SaveProfile(m.profile, m.cwd, global); err != nil {
-			return m, func() tea.Msg { return shared.ErrorMsg{Err: err} }
-		}
-		if !m.isNew && m.origName != "" && m.origName != m.profile.Name {
-			_ = config.DeleteProfile(m.origName, m.cwd, global)
-		}
-		return m, func() tea.Msg {
-			return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
-		}
+		return m.handleSave()
 	case shared.KeyEsc:
-		return m, func() tea.Msg {
-			return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
-		}
+		return m.handleBack()
 	}
 	return m, nil
 }
@@ -517,23 +530,86 @@ func (m *EditorModel) applyFields() {
 	m.profile.ExtraFlags = splitCSV(advanced[0].Value)
 	// Plugins tab changes are applied directly to m.profile as they happen
 	// Apply component selections from the Components tab
+	// Build sets of discovered MCP server names for safe merging
+	discoveredMCPs := make(map[string]bool)
+	selectedMCPs := make(map[string]bool)
 	var skills, agents, commands []config.PathEntry
 	for _, item := range m.discItems {
-		if !item.Selected {
-			continue
-		}
 		switch item.Category {
+		case "MCP Server":
+			discoveredMCPs[item.Name] = true
+			if item.Selected {
+				selectedMCPs[item.Name] = true
+			}
 		case "Skill":
-			skills = append(skills, config.PathEntry{Path: item.Path})
+			if item.Selected {
+				skills = append(skills, config.PathEntry{Path: item.Path})
+			}
 		case "Agent":
-			agents = append(agents, config.PathEntry{Path: item.Path})
+			if item.Selected {
+				agents = append(agents, config.PathEntry{Path: item.Path})
+			}
 		case "Command":
-			commands = append(commands, config.PathEntry{Path: item.Path})
+			if item.Selected {
+				commands = append(commands, config.PathEntry{Path: item.Path})
+			}
 		}
 	}
+	// Rebuild MCPServers: preserve manually-added (non-discovered) entries,
+	// use checklist for discovered entries.
+	var mcpServers []config.MCPServerEntry
+	for _, e := range m.profile.MCPServers {
+		ref := e.Ref
+		if ref == "" {
+			ref = e.Name
+		}
+		if !discoveredMCPs[ref] {
+			mcpServers = append(mcpServers, e) // keep non-discovered entries
+		} else if selectedMCPs[ref] {
+			mcpServers = append(mcpServers, e) // keep selected discovered entries
+		}
+	}
+	// Add newly selected discovered entries not already in profile
+	for _, item := range m.discItems {
+		if item.Category == "MCP Server" && item.Selected && !mcpServerRefContains(m.profile.MCPServers, item.Name) {
+			mcpServers = append(mcpServers, config.MCPServerEntry{Ref: item.Name})
+		}
+	}
+	m.profile.MCPServers = mcpServers
 	m.profile.Skills = skills
 	m.profile.Agents = agents
 	m.profile.Commands = commands
+}
+
+// handleSave saves the profile (editor mode) or launches it (picker mode).
+func (m EditorModel) handleSave() (tea.Model, tea.Cmd) {
+	m.applyFields()
+	if m.pickerMode {
+		p := m.profile
+		return m, func() tea.Msg {
+			return shared.LaunchProfileMsg{ProfileName: "ad-hoc", Profile: p}
+		}
+	}
+	global := m.profile.Source() == config.SourceGlobal
+	if err := config.SaveProfile(m.profile, m.cwd, global); err != nil {
+		return m, func() tea.Msg { return shared.ErrorMsg{Err: err} }
+	}
+	if !m.isNew && m.origName != "" && m.origName != m.profile.Name {
+		_ = config.DeleteProfile(m.origName, m.cwd, global)
+	}
+	return m, func() tea.Msg {
+		return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
+	}
+}
+
+// handleBack returns to home (editor mode) or quits (picker mode).
+func (m EditorModel) handleBack() (tea.Model, tea.Cmd) {
+	if m.pickerMode {
+		return m, tea.Quit
+	}
+	return m, func() tea.Msg {
+		return shared.SwitchScreenMsg{Screen: shared.ScreenHome}
+	}
 }
 
 // togglePluginEnabled toggles whether a plugin is fully enabled.
@@ -656,11 +732,17 @@ func splitCSV(s string) []string {
 func (m EditorModel) View() string {
 	var b strings.Builder
 
-	action := "Edit"
-	if m.isNew {
-		action = "New"
+	var header string
+	if m.pickerMode {
+		header = "Ad-hoc Picker"
+	} else {
+		action := "Edit"
+		if m.isNew {
+			action = "New"
+		}
+		header = fmt.Sprintf("%s Profile: %s", action, m.profile.Name)
 	}
-	b.WriteString(shared.RenderHeader(m.titleStyle, m.dimStyle, fmt.Sprintf("%s Profile: %s", action, m.profile.Name)))
+	b.WriteString(shared.RenderHeader(m.titleStyle, m.dimStyle, header))
 
 	// Tabs
 	var tabs []string
@@ -688,25 +770,34 @@ func (m EditorModel) View() string {
 		fields := m.fields[m.activeTab]
 		for i, f := range fields {
 			cursor := "  "
-			if i == m.fieldCursor {
+			if i == m.fieldCursor && !f.Disabled {
 				cursor = m.accentStyle.Render("> ")
 			}
 
 			label := m.dimStyle.Render(fmt.Sprintf("%-20s", f.Label))
-			value := f.Value
-			if value == "" {
-				value = m.dimStyle.Render("(empty)")
-			}
-
-			if m.editing && i == m.fieldCursor {
-				value = m.accentStyle.Render(m.editBuffer + "█")
-			}
-
-			if f.Options != nil && !m.editing {
-				if value == "" {
-					value = m.dimStyle.Render("(none)")
+			var value string
+			if f.Disabled {
+				if f.Value == "" {
+					value = m.dimStyle.Render("—")
 				} else {
-					value = m.accentStyle.Render(value)
+					value = m.dimStyle.Render(f.Value)
+				}
+			} else {
+				value = f.Value
+				if value == "" {
+					value = m.dimStyle.Render("(empty)")
+				}
+
+				if m.editing && i == m.fieldCursor {
+					value = m.accentStyle.Render(m.editBuffer + "█")
+				}
+
+				if f.Options != nil && !m.editing {
+					if value == "" {
+						value = m.dimStyle.Render("(none)")
+					} else {
+						value = m.accentStyle.Render(value)
+					}
 				}
 			}
 
@@ -716,28 +807,34 @@ func (m EditorModel) View() string {
 
 	// Status bar
 	b.WriteString("\n")
+	saveLabel := "save"
+	backLabel := "back"
+	if m.pickerMode {
+		saveLabel = "launch"
+		backLabel = "quit"
+	}
 	var keys []string
 	if m.activeTab == TabPlugins {
 		if m.expandedPlugin != "" {
 			keys = []string{
 				m.statusKey.Render("space") + " toggle",
 				m.statusKey.Render("←/esc") + " back",
-				m.statusKey.Render("s") + " save",
+				m.statusKey.Render("s") + " " + saveLabel,
 			}
 		} else {
 			keys = []string{
 				m.statusKey.Render("f") + " toggle full",
 				m.statusKey.Render("enter") + " components",
-				m.statusKey.Render("s") + " save",
-				m.statusKey.Render("esc") + " back",
+				m.statusKey.Render("s") + " " + saveLabel,
+				m.statusKey.Render("esc") + " " + backLabel,
 			}
 		}
 	} else if m.activeTab == TabComponents {
 		keys = []string{
 			m.statusKey.Render("space") + " toggle",
 			m.statusKey.Render("/") + " filter",
-			m.statusKey.Render("s") + " save",
-			m.statusKey.Render("esc") + " back",
+			m.statusKey.Render("s") + " " + saveLabel,
+			m.statusKey.Render("esc") + " " + backLabel,
 		}
 	} else if m.editing {
 		keys = []string{
@@ -748,8 +845,8 @@ func (m EditorModel) View() string {
 		keys = []string{
 			m.statusKey.Render("enter") + " edit",
 			m.statusKey.Render("tab") + " next tab",
-			m.statusKey.Render("s") + " save",
-			m.statusKey.Render("esc") + " back",
+			m.statusKey.Render("s") + " " + saveLabel,
+			m.statusKey.Render("esc") + " " + backLabel,
 		}
 	}
 	if m.width > 0 {

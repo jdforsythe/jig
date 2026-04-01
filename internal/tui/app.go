@@ -39,14 +39,16 @@ func New(profiles []config.Profile, cwd string) *App {
 	}
 }
 
-// NewPickerApp creates a new App starting on the picker screen.
+// NewPickerApp creates a new App starting on the editor in picker mode (jig run --pick).
 func NewPickerApp(disc *scanner.Discovery, cwd string) *App {
 	theme := NewTheme()
+	plugins, _ := plugin.Resolve()
+	editor := screens.NewEditorPicker(cwd, disc, plugins, theme.Title, theme.ActiveTab, theme.Tab, theme.Normal, theme.Dimmed, theme.StatusBar, theme.StatusKey, theme.Accent)
 	return &App{
 		cwd:    cwd,
 		theme:  theme,
-		screen: shared.ScreenPicker,
-		picker: screens.NewPicker(disc, theme.Title, theme.Accent, theme.Dimmed, theme.Success, theme.StatusBar, theme.StatusKey),
+		screen: shared.ScreenEditor,
+		editor: editor,
 	}
 }
 

@@ -67,20 +67,30 @@ func Scan(cwd string) (*Discovery, error) {
 
 func scanMCPServers(cwd, home string) []ServerInfo {
 	var servers []ServerInfo
-	paths := []string{
-		filepath.Join(home, ".claude", ".mcp.json"),
-		filepath.Join(cwd, ".mcp.json"),
+
+	type pathSource struct {
+		path   string
+		source string
+	}
+	paths := []pathSource{
+		{filepath.Join(home, ".claude.json"), "user"},         // Claude Code user-level
+		{filepath.Join(home, ".claude", ".mcp.json"), "user"}, // legacy user-level
+		{filepath.Join(cwd, ".mcp.json"), "project"},
 	}
 
-	for _, p := range paths {
-		data, err := os.ReadFile(p)
+	seen := make(map[string]bool)
+	for _, ps := range paths {
+		data, err := os.ReadFile(ps.path)
 		if err != nil {
 			continue
 		}
-
 		names := extractMCPServerNames(string(data))
 		for _, name := range names {
-			servers = append(servers, ServerInfo{Name: name, Source: p})
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			servers = append(servers, ServerInfo{Name: name, Source: ps.source})
 		}
 	}
 	return servers
