@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -64,6 +65,35 @@ func Validate(p *Profile) error {
 		}
 		if hs.Dest == "" {
 			errs = append(errs, fmt.Sprintf("hook_scripts[%d]: dest is required", i))
+			continue
+		}
+		if filepath.IsAbs(hs.Dest) {
+			errs = append(errs, fmt.Sprintf("hook_scripts[%d]: dest must be a relative path", i))
+		}
+		cleanDest := filepath.Clean(hs.Dest)
+		if cleanDest == "." || cleanDest == ".." || strings.HasPrefix(cleanDest, ".."+string(filepath.Separator)) {
+			errs = append(errs, fmt.Sprintf("hook_scripts[%d]: dest must stay within plugin directory", i))
+		}
+	}
+
+	for pluginKey, sel := range p.PluginComponents {
+		if pluginKey == "" {
+			errs = append(errs, "plugin_components: plugin key must not be empty")
+		}
+		for i, name := range sel.Agents {
+			if err := validateComponentName(name); err != nil {
+				errs = append(errs, fmt.Sprintf("plugin_components[%q].agents[%d]: %v", pluginKey, i, err))
+			}
+		}
+		for i, name := range sel.Skills {
+			if err := validateComponentName(name); err != nil {
+				errs = append(errs, fmt.Sprintf("plugin_components[%q].skills[%d]: %v", pluginKey, i, err))
+			}
+		}
+		for i, name := range sel.Commands {
+			if err := validateComponentName(name); err != nil {
+				errs = append(errs, fmt.Sprintf("plugin_components[%q].commands[%d]: %v", pluginKey, i, err))
+			}
 		}
 	}
 
@@ -89,4 +119,20 @@ func contains(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func validateComponentName(name string) error {
+	if name == "" || name == "." || name == ".." {
+		return fmt.Errorf("name must not be empty, '.' or '..'")
+	}
+	if filepath.IsAbs(name) {
+		return fmt.Errorf("absolute paths are not allowed")
+	}
+	if filepath.Base(name) != name {
+		return fmt.Errorf("path separators are not allowed")
+	}
+	if strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return fmt.Errorf("path separators are not allowed")
+	}
+	return nil
 }

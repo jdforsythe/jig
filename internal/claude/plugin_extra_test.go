@@ -356,3 +356,144 @@ func TestExpandPath_TildeOnly(t *testing.T) {
 		t.Errorf("expandPath(~) = %q, want ~ (no expansion without trailing /)", result)
 	}
 }
+
+// TestSafeComponentName tests the safeComponentName safety function
+func TestSafeComponentName_AcceptsLegitimate(t *testing.T) {
+	tests := []string{
+		"my-agent",
+		"skill_v2",
+		"CommandWithNumbers123",
+		"a",
+		"name-with-many-dashes",
+	}
+	for _, name := range tests {
+		_, err := safeComponentName(name)
+		if err != nil {
+			t.Errorf("safeComponentName(%q) should accept, got error: %v", name, err)
+		}
+	}
+}
+
+func TestSafeComponentName_RejectsEmpty(t *testing.T) {
+	_, err := safeComponentName("")
+	if err == nil {
+		t.Error("safeComponentName(\"\") should reject empty string, got no error")
+	}
+}
+
+func TestSafeComponentName_RejectsDot(t *testing.T) {
+	_, err := safeComponentName(".")
+	if err == nil {
+		t.Error("safeComponentName(\".\") should reject dot, got no error")
+	}
+}
+
+func TestSafeComponentName_RejectsDotDot(t *testing.T) {
+	_, err := safeComponentName("..")
+	if err == nil {
+		t.Error("safeComponentName(\"..\") should reject dotdot, got no error")
+	}
+}
+
+func TestSafeComponentName_RejectsAbsolutePath(t *testing.T) {
+	tests := []string{
+		"/etc/passwd",
+		"/absolute/path",
+	}
+	for _, name := range tests {
+		_, err := safeComponentName(name)
+		if err == nil {
+			t.Errorf("safeComponentName(%q) should reject absolute path, got no error", name)
+		}
+	}
+}
+
+func TestSafeComponentName_RejectsPathSeparators(t *testing.T) {
+	tests := []string{
+		"../../../etc/passwd",
+		"subdir/agent",
+		"agent/../../../etc/item",
+		"./relative/path",
+	}
+	for _, name := range tests {
+		_, err := safeComponentName(name)
+		if err == nil {
+			t.Errorf("safeComponentName(%q) should reject path separators, got no error", name)
+		}
+	}
+}
+
+// TestSafeJoinWithin tests the safeJoinWithin safety function
+func TestSafeJoinWithin_AcceptsLegitimate(t *testing.T) {
+	baseDir := t.TempDir()
+	tests := []string{
+		"hooks/script.sh",
+		"validate.sh",
+		"subdir/nested/hooks.json",
+		"file.txt",
+	}
+	for _, relPath := range tests {
+		_, err := safeJoinWithin(baseDir, relPath)
+		if err != nil {
+			t.Errorf("safeJoinWithin(baseDir, %q) should accept, got error: %v", relPath, err)
+		}
+	}
+}
+
+func TestSafeJoinWithin_RejectsAbolutePath(t *testing.T) {
+	baseDir := t.TempDir()
+	tests := []string{
+		"/etc/passwd",
+		"/absolute/path/to/file",
+	}
+	for _, relPath := range tests {
+		_, err := safeJoinWithin(baseDir, relPath)
+		if err == nil {
+			t.Errorf("safeJoinWithin(baseDir, %q) should reject absolute path, got no error", relPath)
+		}
+	}
+}
+
+func TestSafeJoinWithin_RejectsDirectoryTraversal(t *testing.T) {
+	baseDir := t.TempDir()
+	tests := []string{
+		"..",
+		"../../../etc/passwd",
+		"subdir/../../outside",
+	}
+	for _, relPath := range tests {
+		_, err := safeJoinWithin(baseDir, relPath)
+		if err == nil {
+			t.Errorf("safeJoinWithin(baseDir, %q) should reject directory traversal, got no error", relPath)
+		}
+	}
+}
+
+func TestSafeJoinWithin_ComputesCorrectPath(t *testing.T) {
+	baseDir := t.TempDir()
+	relPath := "hooks/validate.sh"
+
+	result, err := safeJoinWithin(baseDir, relPath)
+	if err != nil {
+		t.Fatalf("safeJoinWithin failed: %v", err)
+	}
+
+	expected := filepath.Join(baseDir, relPath)
+	if result != expected {
+		t.Errorf("safeJoinWithin result = %q, want %q", result, expected)
+	}
+}
+
+func TestSafeBaseName_AcceptsLegitimate(t *testing.T) {
+	tests := []string{
+		"my-skill",
+		"agent_v2",
+		"Command",
+	}
+	for _, path := range tests {
+		_, err := safeBaseName(path)
+		if err != nil {
+			t.Errorf("safeBaseName(%q) should accept, got error: %v", path, err)
+		}
+	}
+}

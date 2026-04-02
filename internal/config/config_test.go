@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+	"strings"
 )
 
 func TestValidate(t *testing.T) {
@@ -251,5 +252,142 @@ func TestPaths(t *testing.T) {
 	profilePath := ProfilePath("/some/dir", "my-profile")
 	if profilePath != "/some/dir/my-profile.yaml" {
 		t.Errorf("ProfilePath: got %q", profilePath)
+	}
+}
+
+// TestValidateComponentName_AcceptsLegitimate tests the validateComponentName helper
+func TestValidateComponentName_AcceptsLegitimate(t *testing.T) {
+	tests := []string{
+		"my-agent",
+		"skill-v2",
+		"component-a",
+		"name-with-dashes",
+	}
+	for _, name := range tests {
+		err := validateComponentName(name)
+		if err != nil {
+			t.Errorf("validateComponentName(%q) should accept, got error: %v", name, err)
+		}
+	}
+}
+
+func TestValidateComponentName_RejectsEmpty(t *testing.T) {
+	err := validateComponentName("")
+	if err == nil {
+		t.Error("validateComponentName(\"\") should reject empty string")
+	}
+}
+
+func TestValidateComponentName_RejectsDot(t *testing.T) {
+	err := validateComponentName(".")
+	if err == nil {
+		t.Error("validateComponentName(\".\") should reject dot")
+	}
+}
+
+func TestValidateComponentName_RejectsDotDot(t *testing.T) {
+	err := validateComponentName("..")
+	if err == nil {
+		t.Error("validateComponentName(\"..\") should reject dotdot")
+	}
+}
+
+func TestValidateComponentName_RejectsAbsolutePath(t *testing.T) {
+	tests := []string{
+		"/etc/passwd",
+		"/absolute/path",
+	}
+	for _, name := range tests {
+		err := validateComponentName(name)
+		if err == nil {
+			t.Errorf("validateComponentName(%q) should reject absolute path", name)
+		}
+	}
+}
+
+func TestValidateComponentName_RejectsPathSeparators(t *testing.T) {
+	tests := []string{
+		"../../../etc/passwd",
+		"subdir/agent",
+		"agent/../../../etc/item",
+		"./relative/path",
+	}
+	for _, name := range tests {
+		err := validateComponentName(name)
+		if err == nil {
+			t.Errorf("validateComponentName(%q) should reject path separators", name)
+		}
+	}
+}
+
+func TestValidate_RejectsAbsoluteHookScriptDest(t *testing.T) {
+	p := &Profile{
+		Name: "test",
+		HookScripts: []HookScript{
+			{Dest: "/etc/passwd", Path: "somescript.sh"},
+		},
+	}
+	err := Validate(p)
+	if err == nil {
+		t.Error("Validate should reject absolute hook_scripts destination")
+	}
+}
+
+func TestValidate_RejectsTraversalHookScriptDest(t *testing.T) {
+	p := &Profile{
+		Name: "test",
+		HookScripts: []HookScript{
+			{Dest: "../../outside/directory/file", Path: "somescript.sh"},
+		},
+	}
+	err := Validate(p)
+	if err == nil {
+		t.Error("Validate should reject traversal in hook_scripts destination")
+	}
+}
+
+func TestValidate_AcceptsLegitimateHookScriptDest(t *testing.T) {
+	p := &Profile{
+		Name: "test",
+		HookScripts: []HookScript{
+			{Dest: "hooks/validate.sh", Path: "scripts/validate.sh"},
+			{Dest: "script.sh", Path: "scripts/other.sh"},
+		},
+	}
+	err := Validate(p)
+	if err != nil && strings.Contains(err.Error(), "hook_scripts") {
+		t.Errorf("Validate should accept legitimate hook_scripts destination: %v", err)
+	}
+}
+
+func TestValidate_RejectsInvalidPluginComponentName(t *testing.T) {
+	p := &Profile{
+		Name: "test",
+		PluginComponents: map[string]PluginComponentSelection{
+			"plugin1": {
+				Agents: []string{"../../../etc/passwd"},
+			},
+		},
+	}
+	err := Validate(p)
+	if err == nil {
+		t.Error("Validate should reject invalid plugin component name in agents")
+	}
+}
+
+func TestValidate_AcceptsValidPluginComponentName(t *testing.T) {
+	p := &Profile{
+		Name: "test",
+		PluginComponents: map[string]PluginComponentSelection{
+			"plugin1": {
+				Agents:   []string{"reviewer-agent"},
+				Skills:   []string{"code-analyzer"},
+				Commands: []string{"validate"},
+			},
+		},
+	}
+	err := Validate(p)
+	if err != nil && strings.Contains(err.Error(), "plugin_components") {
+		t.Errorf("Validate should accept valid plugin component names: %v", err)
 	}
 }
